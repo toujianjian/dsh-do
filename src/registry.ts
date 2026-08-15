@@ -12,8 +12,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 /** The registry site this module crawls. */
 export const REGISTRY_URL = 'https://dshplugin.app/'
 
-/** Time budget for one registry fetch. */
-export const FETCH_TIMEOUT_MS = 15_000
+/** Time budget for one registry fetch (the site is occasionally slow). */
+export const FETCH_TIMEOUT_MS = 30_000
 
 /** One parsed plugin entry from the registry homepage. */
 export interface DshPluginRegistryEntry {
@@ -115,38 +115,40 @@ export async function fetchDshPluginRegistry(signal?: AbortSignal): Promise<DshP
 
 /**
  * Install the `GET /dsh-do/registry` proxy route on the harness web server.
- * Optional service: headless compositions without a web server are skipped.
+ * The web server is a sibling provider, so the route is mounted lazily via
+ * `ctx.inject` — never reached for in `apply` (a headless composition without
+ * a web server simply never mounts the route).
  * @param ctx - the plugin context.
  */
 export function installRegistryRoute(ctx: Context): void {
-  const server = ctx.get('webServer')
-  if (server === undefined) return
-  ctx.effect(
-    () => server.register({
-      kind: 'exact',
-      path: '/dsh-do/registry',
-      handler: async (_req: IncomingMessage, res: ServerResponse) => {
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.setHeader('Cache-Control', 'no-cache')
-        try {
-          const plugins = await fetchDshPluginRegistry()
-          res.end(JSON.stringify({
-            ok: true,
-            source: REGISTRY_URL,
-            fetchedAt: Date.now(),
-            count: plugins.length,
-            plugins,
-          }))
-        } catch (error) {
-          res.statusCode = 502
-          res.end(JSON.stringify({
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          }))
-        }
-      },
-    }),
-    'dsh-do.registry-route()',
-  )
+  ctx.inject(['webServer'], (child) => {
+    const server = child.get('webServer')
+    child.effect(
+      () => server.register({
+        kind: 'exact',
+        path: '/dsh-do/registry',
+        handler: async (_req: IncomingMessage, res: ServerResponse) => {
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache')
+          try {
+            const plugins = await fetchDshPluginRegistry()
+            res.end(JSON.stringify({
+              ok: true,
+              source: REGISTRY_URL,
+              fetchedAt: Date.now(),
+              count: plugins.length,
+              plugins,
+            }))
+          } catch (error) {
+            res.statusCode = 502
+            res.end(JSON.stringify({
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            }))
+          }
+        },
+      }, 'dsh-do.registry-route()'),
+    )
+  })
 }

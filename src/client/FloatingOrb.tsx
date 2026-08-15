@@ -59,19 +59,15 @@ function clamp(pos: OrbPos): OrbPos {
   }
 }
 
-/** Static install-advice cards shown in the panel (demo copy). */
-const ADVICE = [
-  { title: '官方插件', body: 'npx -p @deepseek-ai/dsh dsh plugin --profile web add <包名>，重启 profile 生效。' },
-  { title: '本地开发', body: 'pnpm pack 打出 tarball，再 dsh plugin add ./xxx.tgz；改完重新 pack + 重启。' },
-  { title: '安全提示', body: '只安装信任的仓库；Git 依赖会执行 prepare 脚本，安装前先审查。' },
-] as const
-
 const SEARCH_QUERY = 'topic:dsh-plugin'
+const REGISTRY_DISPLAY_LIMIT = 10
 
 /**
- * The dsh-DO floating orb: draggable, click to open the suggestion panel
- * (static install advice + a real GitHub search for `dsh-plugin`-tagged
- * projects), and hosts the right-click "add workspace" dialog.
+ * The dsh-DO floating orb: a neutral black-and-white draggable orb whose panel
+ * discovers harness plugins from two sources — a real GitHub search for
+ * `dsh-plugin`-tagged projects and the dshplugin.app registry proxy — mixed
+ * into one list with a per-item source badge. It also hosts the right-click
+ * "add workspace" dialog.
  * @returns the orb, its panel, and the workspace dialog.
  */
 export function FloatingOrb() {
@@ -154,6 +150,10 @@ export function FloatingOrb() {
     }
   }, [registry.status])
 
+  const bothIdle = search.status === 'idle' && registry.status === 'idle'
+  const githubShown = search.status === 'done' && search.repos.length > 0
+  const registryShown = registry.status === 'done' && registry.plugins.length > 0
+
   return (
     <>
       <AddWorkspaceDialog />
@@ -161,80 +161,65 @@ export function FloatingOrb() {
         {panelOpen && (
           <div className={css.panel} role="dialog" aria-label="dsh-DO 建议面板">
             <div className={css.panelHeader}>
-              <span className={css.panelTitle}>dsh-DO · Detail Optimization</span>
+              <span className={css.panelTitle}>dsh-DO · 插件发现</span>
               <button type="button" className={css.close} aria-label="关闭面板" onClick={() => { setPanelOpen(false) }}>
                 ✕
               </button>
             </div>
 
             <section className={css.section}>
-              <div className={css.sectionTitle}>harness 插件安装建议</div>
-              {ADVICE.map((item) => (
-                <div key={item.title} className={css.adviceCard}>
-                  <div className={css.adviceTitle}>{item.title}</div>
-                  <div className={css.adviceBody}>{item.body}</div>
-                </div>
-              ))}
-            </section>
+              <div className={css.sectionTitle}>安装建议（GitHub + dshplugin.app）</div>
+              <div className={css.discoverActions}>
+                <button
+                  type="button"
+                  className={css.searchButton}
+                  disabled={search.status === 'loading'}
+                  onClick={() => { void runSearch() }}
+                >
+                  {search.status === 'loading' ? '搜索中…' : '搜索 GitHub'}
+                </button>
+                <button
+                  type="button"
+                  className={css.searchButtonAlt}
+                  disabled={registry.status === 'loading'}
+                  onClick={() => { void runRegistryFetch() }}
+                >
+                  {registry.status === 'loading' ? '抓取中…' : '抓取 dshplugin.app'}
+                </button>
+              </div>
 
-            <section className={css.section}>
-              <div className={css.sectionTitle}>GitHub 上的 dsh-plugin 项目</div>
-              <button
-                type="button"
-                className={css.searchButton}
-                disabled={search.status === 'loading'}
-                onClick={() => { void runSearch() }}
-              >
-                {search.status === 'loading' ? '搜索中…' : `搜索 GitHub（topic: ${SEARCH_QUERY.replace('topic:', '')}）`}
-              </button>
-              {search.status === 'done' && search.repos.length === 0 && (
-                <div className={css.muted}>没有找到带 dsh-plugin 标签的项目</div>
-              )}
               {search.status === 'error' && (
-                <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
-              )}
-              {search.status === 'done' && search.repos.length > 0 && (
-                <ul className={css.repoList}>
-                  {search.repos.map((repo) => (
-                    <li key={repo.full_name}>
-                      <a className={css.repoLink} href={repo.html_url} target="_blank" rel="noreferrer">
-                        <span className={css.repoName}>{repo.full_name}</span>
-                        <span className={css.repoMeta}>
-                          {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
-                        </span>
-                      </a>
-                      {repo.description !== null && <div className={css.repoDesc}>{repo.description}</div>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className={css.section}>
-              <div className={css.sectionTitle}>dshplugin.app 插件目录</div>
-              <button
-                type="button"
-                className={css.searchButton}
-                disabled={registry.status === 'loading'}
-                onClick={() => { void runRegistryFetch() }}
-              >
-                {registry.status === 'loading' ? '抓取中…' : '抓取 dshplugin.app 目录'}
-              </button>
-              {registry.status === 'done' && registry.plugins.length === 0 && (
-                <div className={css.muted}>目录为空，或站点结构已变化</div>
+                <div className={css.errorText}>GitHub 搜索失败（API 限流或网络问题），稍后再试。</div>
               )}
               {registry.status === 'error' && (
-                <div className={css.errorText}>抓取失败（dshplugin.app 或代理不可用），稍后再试。</div>
+                <div className={css.errorText}>dshplugin.app 抓取失败（代理或站点不可用），稍后再试。</div>
               )}
-              {registry.status === 'done' && registry.plugins.length > 0 && (
-                <div className={css.registryMeta}>共 {registry.plugins.length} 个插件（来自 dshplugin.app）</div>
+              {search.status === 'done' && search.repos.length === 0 && (
+                <div className={css.muted}>GitHub 上没有找到带 dsh-plugin 标签的项目</div>
               )}
-              {registry.status === 'done' && registry.plugins.length > 0 && (
-                <ul className={css.registryList}>
-                  {registry.plugins.slice(0, 10).map((plugin) => (
-                    <li key={plugin.packageName} className={css.registryItem}>
+              {registry.status === 'done' && registry.plugins.length === 0 && (
+                <div className={css.muted}>dshplugin.app 目录为空，或站点结构已变化</div>
+              )}
+
+              {!bothIdle && (githubShown || registryShown) && (
+                <ul className={css.discoverList}>
+                  {githubShown && search.repos.map((repo) => (
+                    <li key={`gh:${repo.full_name}`} className={css.discoverItem}>
+                      <span className={`${css.sourceBadge} ${css.sourceGh}`}>GitHub</span>
+                      <a className={css.discoverName} href={repo.html_url} target="_blank" rel="noreferrer">
+                        {repo.full_name}
+                      </a>
+                      <span className={css.discoverMeta}>
+                        {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
+                      </span>
+                      {repo.description !== null && <div className={css.discoverDesc}>{repo.description}</div>}
+                    </li>
+                  ))}
+                  {registryShown && registry.plugins.slice(0, REGISTRY_DISPLAY_LIMIT).map((plugin) => (
+                    <li key={`app:${plugin.packageName}`} className={css.discoverItem}>
+                      <span className={`${css.sourceBadge} ${css.sourceApp}`}>dshplugin.app</span>
                       <a
-                        className={css.registryName}
+                        className={css.discoverName}
                         href={plugin.repositoryUrl ?? undefined}
                         target={plugin.repositoryUrl === undefined ? undefined : '_blank'}
                         rel="noreferrer"
@@ -242,15 +227,15 @@ export function FloatingOrb() {
                         {plugin.name}
                       </a>
                       {plugin.categories.length > 0 && (
-                        <span className={css.registryCats}>
+                        <span className={css.discoverCats}>
                           {plugin.categories.slice(0, 3).map((cat) => (
-                            <span key={cat} className={css.registryCat}>{cat}</span>
+                            <span key={cat} className={css.discoverCat}>{cat}</span>
                           ))}
                         </span>
                       )}
-                      {plugin.description !== undefined && <div className={css.registryDesc}>{plugin.description}</div>}
+                      {plugin.description !== undefined && <div className={css.discoverDesc}>{plugin.description}</div>}
                       {plugin.installCommand !== undefined && plugin.installCommand.length > 0 && (
-                        <code className={css.registryInstall}>{plugin.installCommand}</code>
+                        <code className={css.discoverInstall}>{plugin.installCommand}</code>
                       )}
                     </li>
                   ))}
@@ -264,7 +249,7 @@ export function FloatingOrb() {
           type="button"
           className={css.orb}
           style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
-          aria-label="dsh-DO 建议"
+          aria-label="dsh-DO 插件发现"
           aria-expanded={panelOpen}
           onClick={() => {
             if (!moved) setPanelOpen((open) => !open)
@@ -274,7 +259,6 @@ export function FloatingOrb() {
           onPointerUp={onPointerUp}
         >
           <span className={css.orbText}>DO</span>
-          <span className={css.orbGlow} aria-hidden="true" />
         </button>
       </div>
     </>
