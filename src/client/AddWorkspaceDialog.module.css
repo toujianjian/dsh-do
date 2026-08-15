@@ -12,10 +12,10 @@
   box-sizing: border-box;
   padding: 12px;
   border-radius: 12px;
-  background: var(--dsw-alias-surface-elevated, #ffffff);
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
+  background: #ffffff;
+  border: 1px solid #c9ced3;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-  color: var(--dsw-alias-label-primary, #1f2328);
+  color: #1f2328;
   font-size: 13px;
   line-height: 18px;
   display: flex;
@@ -26,11 +26,11 @@
 .heading {
   font-size: 14px;
   font-weight: 600;
-  color: var(--dsw-alias-label-primary, #1f2328);
+  color: #1f2328;
 }
 
 .hint {
-  color: var(--dsw-alias-label-secondary, #3f4753);
+  color: #3f4753;
   font-size: 12px;
   line-height: 17px;
 }
@@ -40,8 +40,8 @@
   width: 100%;
   padding: 6px 8px;
   border-radius: 6px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
-  background: var(--dsw-alias-input-fill, #ffffff);
+  border: 1px solid #c9ced3;
+  background: #ffffff;
   color: inherit;
   font-size: 13px;
   line-height: 20px;
@@ -49,11 +49,11 @@
 }
 
 .input:focus {
-  border-color: var(--dsw-alias-state-business-primary, #0969da);
+  border-color: #0969da;
 }
 
 .failure {
-  color: var(--dsw-alias-state-danger-fg, #d1242f);
+  color: #d1242f;
   font-size: 12px;
   line-height: 17px;
   word-break: break-word;
@@ -77,15 +77,15 @@
 
 .cancel {
   background: transparent;
-  color: var(--dsw-alias-label-primary, #1f2328);
+  color: #1f2328;
 }
 
 .cancel:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.12));
+  background: rgba(128, 128, 128, 0.14);
 }
 
 .submit {
-  background: var(--dsw-alias-state-business-primary, #0969da);
+  background: #0969da;
   color: #ffffff;
 }
 
