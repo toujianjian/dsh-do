@@ -11,22 +11,6 @@ interface GitHubRepo {
   language: string | null
 }
 
-/** One plugin entry from the dshplugin.app registry proxy. */
-interface RegistryEntry {
-  slug: string
-  name: string
-  repository?: string
-  repositoryUrl?: string
-  description?: string
-  categories: string[]
-  installCommand?: string
-  status?: string
-  profile?: string
-  license?: string
-  packageName: string
-  version?: string
-}
-
 /** Position of the orb on screen. */
 interface OrbPos {
   x: number
@@ -60,14 +44,32 @@ function clamp(pos: OrbPos): OrbPos {
 }
 
 const SEARCH_QUERY = 'topic:dsh-plugin'
-const REGISTRY_DISPLAY_LIMIT = 10
+
+/** Build the install prompt handed to a brand-new session for one repo. */
+function installPromptFor(repo: GitHubRepo): string {
+  return [
+    `请帮我安装 DSH 插件：${repo.full_name}`,
+    `仓库：${repo.html_url}`,
+    '',
+    '步骤：',
+    '1. 先确认它是有效的 DSH 插件（package.json 含 dsh.bundle，且 patch/产物完整可加载）；',
+    '2. 用 dsh plugin --profile web add github:<owner>/<repo> 安装（若它是 npm 包则用包名）；',
+    '3. 验证安装结果（bundle 层已注册、--dump-config 能看到），并告诉我是否需要重启 profile 生效。',
+  ].join('\n')
+}
+
+/** The "AI install" request state for one repo row. */
+interface InstallState {
+  readonly name: string
+  readonly status: 'working' | 'done' | 'error'
+  readonly message?: string
+}
 
 /**
  * The dsh-DO floating orb: a neutral black-and-white draggable orb whose panel
- * discovers harness plugins from two sources — a real GitHub search for
- * `dsh-plugin`-tagged projects and the dshplugin.app registry proxy — mixed
- * into one list with a per-item source badge. It also hosts the right-click
- * "add workspace" dialog.
+ * searches GitHub for `dsh-plugin`-tagged projects; each hit has an "AI
+ * install" button that opens a brand-new session pre-filled with an install
+ * prompt. It also hosts the right-click "add workspace" dialog.
  * @returns the orb, its panel, and the workspace dialog.
  */
 export function FloatingOrb() {
@@ -80,10 +82,7 @@ export function FloatingOrb() {
     status: 'idle',
     repos: [],
   })
-  const [registry, setRegistry] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; plugins: RegistryEntry[] }>({
-    status: 'idle',
-    plugins: [],
-  })
+  const [installs, setInstalls] = useState<Record<string, InstallState>>({})
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
@@ -135,31 +134,38 @@ export function FloatingOrb() {
     }
   }, [search.status])
 
-  const runRegistryFetch = useCallback(async () => {
-    if (registry.status === 'loading') return
-    setRegistry((current) => ({ ...current, status: 'loading' }))
+  /** Ask the host to open a new session with the install prompt. */
+  const aiInstall = useCallback(async (repo: GitHubRepo) => {
+    const name = repo.full_name
+    setInstalls((current) => ({ ...current, [name]: { name, status: 'working' } }))
     try {
-      const response = await fetch('/dsh-do/registry', { headers: { Accept: 'application/json' } })
-      const payload = (await response.json()) as { ok: boolean; plugins?: RegistryEntry[] }
+      const response = await fetch('/dsh-do/ai-install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ prompt: installPromptFor(repo) }),
+      })
+      const payload = (await response.json()) as { ok: boolean; error?: string }
       if (!alive.current) return
-      if (!response.ok || payload.ok !== true) throw new Error(`registry proxy ${response.status}`)
-      setRegistry({ status: 'done', plugins: payload.plugins ?? [] })
+      if (!response.ok || payload.ok !== true) throw new Error(payload.error ?? `HTTP ${response.status}`)
+      setInstalls((current) => ({
+        ...current,
+        [name]: { name, status: 'done', message: '已在新会话中开始安装' },
+      }))
     } catch (error) {
       if (!alive.current) return
-      setRegistry({ status: 'error', plugins: [] })
+      setInstalls((current) => ({
+        ...current,
+        [name]: { name, status: 'error', message: error instanceof Error ? error.message : String(error) },
+      }))
     }
-  }, [registry.status])
-
-  const bothIdle = search.status === 'idle' && registry.status === 'idle'
-  const githubShown = search.status === 'done' && search.repos.length > 0
-  const registryShown = registry.status === 'done' && registry.plugins.length > 0
+  }, [])
 
   return (
     <>
       <AddWorkspaceDialog />
       <div className={css.layer} data-dsh-do-orb>
         {panelOpen && (
-          <div className={css.panel} role="dialog" aria-label="dsh-DO 建议面板">
+          <div className={css.panel} role="dialog" aria-label="dsh-DO 插件发现">
             <div className={css.panelHeader}>
               <span className={css.panelTitle}>dsh-DO · 插件发现</span>
               <button type="button" className={css.close} aria-label="关闭面板" onClick={() => { setPanelOpen(false) }}>
@@ -168,77 +174,55 @@ export function FloatingOrb() {
             </div>
 
             <section className={css.section}>
-              <div className={css.sectionTitle}>安装建议（GitHub + dshplugin.app）</div>
-              <div className={css.discoverActions}>
-                <button
-                  type="button"
-                  className={css.searchButton}
-                  disabled={search.status === 'loading'}
-                  onClick={() => { void runSearch() }}
-                >
-                  {search.status === 'loading' ? '搜索中…' : '搜索 GitHub'}
-                </button>
-                <button
-                  type="button"
-                  className={css.searchButtonAlt}
-                  disabled={registry.status === 'loading'}
-                  onClick={() => { void runRegistryFetch() }}
-                >
-                  {registry.status === 'loading' ? '抓取中…' : '抓取 dshplugin.app'}
-                </button>
-              </div>
+              <div className={css.sectionTitle}>GitHub 上的 dsh-plugin 项目</div>
+              <button
+                type="button"
+                className={css.searchButton}
+                disabled={search.status === 'loading'}
+                onClick={() => { void runSearch() }}
+              >
+                {search.status === 'loading' ? '搜索中…' : '搜索 GitHub'}
+              </button>
 
               {search.status === 'error' && (
-                <div className={css.errorText}>GitHub 搜索失败（API 限流或网络问题），稍后再试。</div>
-              )}
-              {registry.status === 'error' && (
-                <div className={css.errorText}>dshplugin.app 抓取失败（代理或站点不可用），稍后再试。</div>
+                <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
               )}
               {search.status === 'done' && search.repos.length === 0 && (
-                <div className={css.muted}>GitHub 上没有找到带 dsh-plugin 标签的项目</div>
-              )}
-              {registry.status === 'done' && registry.plugins.length === 0 && (
-                <div className={css.muted}>dshplugin.app 目录为空，或站点结构已变化</div>
+                <div className={css.muted}>没有找到带 dsh-plugin 标签的项目</div>
               )}
 
-              {!bothIdle && (githubShown || registryShown) && (
-                <ul className={css.discoverList}>
-                  {githubShown && search.repos.map((repo) => (
-                    <li key={`gh:${repo.full_name}`} className={css.discoverItem}>
-                      <span className={`${css.sourceBadge} ${css.sourceGh}`}>GitHub</span>
-                      <a className={css.discoverName} href={repo.html_url} target="_blank" rel="noreferrer">
-                        {repo.full_name}
-                      </a>
-                      <span className={css.discoverMeta}>
-                        {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
-                      </span>
-                      {repo.description !== null && <div className={css.discoverDesc}>{repo.description}</div>}
-                    </li>
-                  ))}
-                  {registryShown && registry.plugins.slice(0, REGISTRY_DISPLAY_LIMIT).map((plugin) => (
-                    <li key={`app:${plugin.packageName}`} className={css.discoverItem}>
-                      <span className={`${css.sourceBadge} ${css.sourceApp}`}>dshplugin.app</span>
-                      <a
-                        className={css.discoverName}
-                        href={plugin.repositoryUrl ?? undefined}
-                        target={plugin.repositoryUrl === undefined ? undefined : '_blank'}
-                        rel="noreferrer"
-                      >
-                        {plugin.name}
-                      </a>
-                      {plugin.categories.length > 0 && (
-                        <span className={css.discoverCats}>
-                          {plugin.categories.slice(0, 3).map((cat) => (
-                            <span key={cat} className={css.discoverCat}>{cat}</span>
-                          ))}
+              {search.status === 'done' && search.repos.length > 0 && (
+                <ul className={css.repoList}>
+                  {search.repos.map((repo) => {
+                    const install = installs[repo.full_name]
+                    return (
+                      <li key={repo.full_name} className={css.repoItem}>
+                        <div className={css.repoTop}>
+                          <a className={css.repoName} href={repo.html_url} target="_blank" rel="noreferrer">
+                            {repo.full_name}
+                          </a>
+                          <button
+                            type="button"
+                            className={css.aiInstall}
+                            disabled={install?.status === 'working'}
+                            onClick={() => { void aiInstall(repo) }}
+                          >
+                            {install?.status === 'working' ? '启动中…' : 'AI 安装'}
+                          </button>
+                        </div>
+                        <span className={css.repoMeta}>
+                          {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
                         </span>
-                      )}
-                      {plugin.description !== undefined && <div className={css.discoverDesc}>{plugin.description}</div>}
-                      {plugin.installCommand !== undefined && plugin.installCommand.length > 0 && (
-                        <code className={css.discoverInstall}>{plugin.installCommand}</code>
-                      )}
-                    </li>
-                  ))}
+                        {repo.description !== null && <div className={css.repoDesc}>{repo.description}</div>}
+                        {install?.status === 'done' && (
+                          <div className={css.installOk} role="status">{install.message}</div>
+                        )}
+                        {install?.status === 'error' && (
+                          <div className={css.errorText} role="status">{install.message}</div>
+                        )}
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </section>

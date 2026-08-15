@@ -15,10 +15,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { installAiInstallRoute } from './ai-install.js'
 import { LoopStore } from './checkpoint.js'
 import { LoopController } from './controller.js'
 import { installLoopDriver } from './driver.js'
-import { installRegistryRoute } from './registry.js'
 import { registerLoopTools } from './tools.js'
 
 /** Cordis plugin name. */
@@ -69,6 +69,6 @@ export function apply(ctx: Context, config: Config): void {
 	ctx.effect(function* () {
 		installLoopDriver(ctx, controller, restore)
 	}, 'dsh-do.driver()')
-	installRegistryRoute(ctx)
+	installAiInstallRoute(ctx)
 	ctx.systemPrompt.section({ name: 'tool:loop', order: 121, text: LOOP_GUIDANCE })
 }
