@@ -1,0 +1,7 @@
+- insert:
+    - id: loop
+      name: dsh-loop
+      config:
+        defaultMaxRounds: 20
+        checkpointDir: ""
+        persist: true
