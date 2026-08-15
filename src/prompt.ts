@@ -2,7 +2,7 @@
  * Model-visible prompt renderers for loop rounds and closing wrapups.
  * Pure functions: identical inputs produce identical blocks.
  *
- * @module dsh-loop/prompt
+ * @module dsh-do/prompt
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 

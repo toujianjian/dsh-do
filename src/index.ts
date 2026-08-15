@@ -1,5 +1,5 @@
 /**
- * dsh-loop: a Claude Code-style autonomous loop for DeepSeek Harness.
+ * dsh-do: a Claude Code-style autonomous loop for DeepSeek Harness.
  *
  * Registers four model-facing tools (`loop_start`, `loop_status`,
  * `loop_done`, `loop_cancel`) and a round-continuation driver. After an armed
@@ -9,7 +9,7 @@
  * checkpointed atomically under a configurable directory and restored on
  * startup, so an interrupted run resumes when its session comes back live.
  *
- * @module dsh-loop
+ * @module dsh-do
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { LoopStore } from './checkpoint.js'
 import { LoopController } from './controller.js'
 import { installLoopDriver } from './driver.js'
+import { installRegistryRoute } from './registry.js'
 import { registerLoopTools } from './tools.js'
 
 /** Cordis plugin name. */
@@ -59,14 +60,15 @@ export function apply(ctx: Context, config: Config): void {
 		ctx.logger,
 	)
 	const restore = controller.restore().catch((error: unknown) => {
-		ctx.logger.warn(`dsh-loop: checkpoint restore failed; continuing in memory: ${String(error)}`)
+		ctx.logger.warn(`dsh-do: checkpoint restore failed; continuing in memory: ${String(error)}`)
 	})
 	ctx.effect(async function* () {
 		await restore
 		registerLoopTools(ctx, controller, { defaultMaxRounds: config.defaultMaxRounds })
-	}, 'dsh-loop.tools()')
+	}, 'dsh-do.tools()')
 	ctx.effect(function* () {
 		installLoopDriver(ctx, controller, restore)
-	}, 'dsh-loop.driver()')
+	}, 'dsh-do.driver()')
+	installRegistryRoute(ctx)
 	ctx.systemPrompt.section({ name: 'tool:loop', order: 121, text: LOOP_GUIDANCE })
 }

@@ -9,9 +9,9 @@ import {
 	markCancelled,
 	markCompleted,
 	markRoundAdmitted,
-} from '../lib/loop.js'
-import { renderLoopRoundPrompt, renderLoopWrapupContext } from '../lib/prompt.js'
-import { parseCheckpoint, serializeCheckpoint } from '../lib/checkpoint.js'
+} from '../lib/types/loop.js'
+import { renderLoopRoundPrompt, renderLoopWrapupContext } from '../lib/types/prompt.js'
+import { parseCheckpoint, serializeCheckpoint } from '../lib/types/checkpoint.js'
 
 test('createLoop mints an armed, active loop with the given budget', () => {
 	const loop = createLoop({ sessionId: 'session-1', objective: 'Fix the build', maxRounds: 3, now: 1000 })

@@ -4,7 +4,7 @@
  * rename), and writes to one file are serialized through an in-flight chain so
  * concurrent transitions cannot interleave whole-file replacements.
  *
- * @module dsh-loop/checkpoint
+ * @module dsh-do/checkpoint
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
@@ -147,12 +147,12 @@ export class LoopStore {
 				text = await readFile(filePath, 'utf8')
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-				this.options.onError?.(`dsh-loop: could not read checkpoint ${entry}: ${String(error)}`)
+				this.options.onError?.(`dsh-do: could not read checkpoint ${entry}: ${String(error)}`)
 				continue
 			}
 			const parsed = parseCheckpoint(text, entry)
 			if (!parsed.ok) {
-				this.options.onError?.(`dsh-loop: skipping checkpoint ${entry}: ${parsed.error}`)
+				this.options.onError?.(`dsh-do: skipping checkpoint ${entry}: ${parsed.error}`)
 				continue
 			}
 			// A session may accumulate records across loop replacements (terminal

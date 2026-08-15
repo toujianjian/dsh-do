@@ -3,7 +3,7 @@
  * transitions. No runtime dependency beyond `node:crypto`; type-only imports
  * keep the module side-effect free.
  *
- * @module dsh-loop/loop
+ * @module dsh-do/loop
  */
 import { randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'

@@ -1,6 +1,6 @@
 - insert:
-    - id: loop
-      name: dsh-loop
+    - id: do
+      name: dsh-do
       config:
         defaultMaxRounds: 20
         checkpointDir: ""

@@ -3,7 +3,7 @@
  * Every mutation is applied to the live map and then published through the
  * store; persistence failures are logged but never fail the mutation.
  *
- * @module dsh-loop/controller
+ * @module dsh-do/controller
  */
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { LoopStore } from './checkpoint.js'
@@ -46,7 +46,7 @@ export class LoopController {
 		if (this.store === undefined) return
 		const loaded = await this.store.load()
 		for (const [sessionId, loop] of loaded) this.loops.set(sessionId, loop)
-		if (loaded.size > 0) this.logger.info(`dsh-loop: restored ${loaded.size} checkpointed loop(s)`)
+		if (loaded.size > 0) this.logger.info(`dsh-do: restored ${loaded.size} checkpointed loop(s)`)
 	}
 
 	get(sessionId: string): LoopState | undefined {
@@ -111,7 +111,7 @@ export class LoopController {
 		this.loops.set(loop.sessionId, loop)
 		if (this.store !== undefined) {
 			this.store.write(loop).catch((error: unknown) => {
-				this.logger.warn(`dsh-loop: checkpoint write failed for loop ${loop.id}: ${String(error)}`)
+				this.logger.warn(`dsh-do: checkpoint write failed for loop ${loop.id}: ${String(error)}`)
 			})
 		}
 		return loop

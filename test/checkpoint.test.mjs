@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LoopStore, serializeCheckpoint } from '../lib/checkpoint.js'
-import { createLoop, markCompleted, markRoundAdmitted } from '../lib/loop.js'
+import { LoopStore, serializeCheckpoint } from '../lib/types/checkpoint.js'
+import { createLoop, markCompleted, markRoundAdmitted } from '../lib/types/loop.js'
 
 test('LoopStore persists and restores loops keyed by session id', async () => {
-	const root = await mkdtemp(join(tmpdir(), 'dsh-loop-'))
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
 	try {
 		const store = new LoopStore(root)
 		const loop = createLoop({ sessionId: 'session-a', objective: 'do the thing', maxRounds: 4 })
@@ -26,7 +26,7 @@ test('LoopStore persists and restores loops keyed by session id', async () => {
 })
 
 test('LoopStore last write wins atomically for one file', async () => {
-	const root = await mkdtemp(join(tmpdir(), 'dsh-loop-'))
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
 	try {
 		const store = new LoopStore(root)
 		const base = createLoop({ sessionId: 'session-b', objective: 'o', maxRounds: 3, now: 1 })
@@ -41,7 +41,7 @@ test('LoopStore last write wins atomically for one file', async () => {
 })
 
 test('LoopStore ignores unrelated and malformed files, reports errors', async () => {
-	const root = await mkdtemp(join(tmpdir(), 'dsh-loop-'))
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
 	try {
 		const { writeFile } = await import('node:fs/promises')
 		await writeFile(join(root, 'unrelated.txt'), 'x')
@@ -57,7 +57,7 @@ test('LoopStore ignores unrelated and malformed files, reports errors', async ()
 })
 
 test('LoopStore keeps the newest record per session across loop replacements', async () => {
-	const root = await mkdtemp(join(tmpdir(), 'dsh-loop-'))
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
 	try {
 		const store = new LoopStore(root)
 		const first = createLoop({ sessionId: 'session-c', objective: 'old', maxRounds: 2, now: 1 })

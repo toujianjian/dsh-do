@@ -6,7 +6,7 @@
  * the `agent/pre-step` reservation waterfall that rejects stale or foreign
  * round prompts without disturbing other claimed messages.
  *
- * @module dsh-loop/driver
+ * @module dsh-do/driver
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
@@ -97,7 +97,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			const loop = loopOf(state)
 			if (loop !== undefined && loop.armed) controller.arm(state.agent.session.id, false)
 		} catch (error) {
-			ctx.logger.warn(`dsh-loop: could not disarm agent "${state.agent.id}": ${renderThrown(error)}`)
+			ctx.logger.warn(`dsh-do: could not disarm agent "${state.agent.id}": ${renderThrown(error)}`)
 		}
 	}
 
@@ -150,7 +150,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			try {
 				controller.block(agent.session.id, 'round-limit', `Loop reached its configured limit of ${loop.maxRounds} rounds.`)
 			} catch (error) {
-				ctx.logger.warn(`dsh-loop: could not block agent "${agent.id}" at its round limit: ${renderThrown(error)}`)
+				ctx.logger.warn(`dsh-do: could not block agent "${agent.id}" at its round limit: ${renderThrown(error)}`)
 			}
 			return
 		}
@@ -162,13 +162,13 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			agent.followup(message)
 		} catch (error) {
 			state.attempt = undefined
-			ctx.logger.warn(`dsh-loop: could not queue round ${round} for agent "${agent.id}": ${renderThrown(error)}`)
+			ctx.logger.warn(`dsh-do: could not queue round ${round} for agent "${agent.id}": ${renderThrown(error)}`)
 			const latest = loopOf(state)
 			if (latest !== undefined && latest.id === loop.id && latest.phase === 'active' && latest.armed) {
 				try {
 					controller.block(agent.session.id, 'queue-failed', `Could not queue loop round ${round}: ${renderThrown(error)}`)
 				} catch (blockError) {
-					ctx.logger.warn(`dsh-loop: could not block agent "${agent.id}" after a queue failure: ${renderThrown(blockError)}`)
+					ctx.logger.warn(`dsh-do: could not block agent "${agent.id}" after a queue failure: ${renderThrown(blockError)}`)
 				}
 			}
 		}
@@ -187,13 +187,13 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 					try {
 						await drive(state)
 					} catch (error) {
-						ctx.logger.warn(`dsh-loop: driver failed for agent "${state.agent.id}": ${renderThrown(error)}`)
+						ctx.logger.warn(`dsh-do: driver failed for agent "${state.agent.id}": ${renderThrown(error)}`)
 						disarm(state)
 					}
 				}
 			})
 		} catch (error) {
-			ctx.logger.warn(`dsh-loop: could not start driver for agent "${state.agent.id}": ${renderThrown(error)}`)
+			ctx.logger.warn(`dsh-do: could not start driver for agent "${state.agent.id}": ${renderThrown(error)}`)
 			disarm(state)
 			return
 		}
@@ -203,7 +203,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			if (state.requested && !state.stopping) requestDrive(state)
 		}
 		run.then(retire, (error) => {
-			ctx.logger.warn(`dsh-loop: driver task rejected for agent "${state.agent.id}": ${renderThrown(error)}`)
+			ctx.logger.warn(`dsh-do: driver task rejected for agent "${state.agent.id}": ${renderThrown(error)}`)
 			disarm(state)
 			retire()
 		})
@@ -238,7 +238,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 					try {
 						controller.arm(agent.session.id, false)
 					} catch (error) {
-						ctx.logger.warn(`dsh-loop: could not disarm agent "${agent.id}" after a cancelled round: ${renderThrown(error)}`)
+						ctx.logger.warn(`dsh-do: could not disarm agent "${agent.id}" after a cancelled round: ${renderThrown(error)}`)
 						disarm(state)
 					}
 				}
@@ -296,7 +296,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			try {
 				valid = validReservation(state, content, source)
 			} catch (error) {
-				ctx.logger.warn(`dsh-loop: pre-step check failed for agent "${agent.id}": ${renderThrown(error)}`)
+				ctx.logger.warn(`dsh-do: pre-step check failed for agent "${agent.id}": ${renderThrown(error)}`)
 				disarm(state)
 			}
 			if (!valid) {
@@ -329,7 +329,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 					try {
 						controller.block(agent.session.id, 'prompt-rejected', 'Loop round was rejected before entering its step.')
 					} catch (error) {
-						ctx.logger.warn(`dsh-loop: could not block agent "${agent.id}" after a rejected round: ${renderThrown(error)}`)
+						ctx.logger.warn(`dsh-do: could not block agent "${agent.id}" after a rejected round: ${renderThrown(error)}`)
 					}
 				}
 				return decision
@@ -337,7 +337,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			try {
 				valid = validReservation(state, content, source)
 			} catch (error) {
-				ctx.logger.warn(`dsh-loop: post-decision check failed for agent "${agent.id}": ${renderThrown(error)}`)
+				ctx.logger.warn(`dsh-do: post-decision check failed for agent "${agent.id}": ${renderThrown(error)}`)
 				disarm(state)
 				valid = false
 			}
@@ -373,5 +373,5 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			await Promise.allSettled(waits)
 			states.clear()
 		}
-	}, 'dsh-loop.driver()')
+	}, 'dsh-do.driver()')
 }

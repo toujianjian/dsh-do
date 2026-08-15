@@ -2,7 +2,7 @@
  * Model-facing `loop_start`, `loop_status`, `loop_done`, and `loop_cancel`
  * tools over the persisted same-session loop domain.
  *
- * @module dsh-loop/tools
+ * @module dsh-do/tools
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -253,7 +253,7 @@ export function registerLoopTools(ctx: Context, controller: LoopController, conf
 							}),
 							source: {
 								kind: 'plugin',
-								plugin: 'dsh-loop',
+								plugin: 'dsh-do',
 								form: 'notice',
 								summary: boundContextSummary(`loop_done: ${loop.objective}`),
 							},
@@ -293,7 +293,7 @@ export function registerLoopTools(ctx: Context, controller: LoopController, conf
 							}),
 							source: {
 								kind: 'plugin',
-								plugin: 'dsh-loop',
+								plugin: 'dsh-do',
 								form: 'notice',
 								summary: boundContextSummary(`loop_cancel: ${loop.objective}`),
 							},
