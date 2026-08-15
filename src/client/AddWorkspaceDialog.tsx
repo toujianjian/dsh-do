@@ -21,12 +21,16 @@ export function AddWorkspaceDialog() {
   const [value, setValue] = useState('')
   const [pending, setPending] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [mobile, setMobile] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!state.open) return
     setValue('')
     setFailure(null)
+    // Re-evaluate the viewport class each time the dialog opens, so a phone
+    // gets the full-width bottom sheet while a desktop keeps the anchor popup.
+    setMobile(window.matchMedia('(max-width: 480px)').matches)
     // Focus and select after the dialog mounts so paste is one key away.
     const frame = requestAnimationFrame(() => {
       inputRef.current?.focus()
@@ -68,8 +72,8 @@ export function AddWorkspaceDialog() {
 
   if (!state.open) return null
 
-  const left = Math.max(8, Math.min(state.x, window.innerWidth - DIALOG_WIDTH - 8))
-  const top = Math.max(8, Math.min(state.y, window.innerHeight - 180))
+  const left = mobile ? undefined : Math.max(8, Math.min(state.x, window.innerWidth - DIALOG_WIDTH - 8))
+  const top = mobile ? undefined : Math.max(8, Math.min(state.y, window.innerHeight - 180))
 
   return (
     <div
@@ -81,8 +85,8 @@ export function AddWorkspaceDialog() {
       }}
     >
       <form
-        className={css.card}
-        style={{ left, top }}
+        className={mobile ? css.cardMobile : css.card}
+        style={mobile ? undefined : { left, top }}
         role="dialog"
         aria-label="添加工作区"
         onSubmit={(event) => {

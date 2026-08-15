@@ -210,3 +210,44 @@
   font-size: 12px;
   line-height: 17px;
 }
+
+/* --- Mobile adaptation --- */
+@media (max-width: 480px) {
+  .orb {
+    width: 48px;
+    height: 48px;
+  }
+
+  .orbText {
+    font-size: 14px;
+  }
+
+  /* Full-width bottom-sheet panel above the orb, clear of the home indicator. */
+  .panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    max-height: calc(100vh - 96px - env(safe-area-inset-bottom, 0px));
+    border-radius: 14px;
+  }
+
+  /* Comfortable touch targets. */
+  .searchButton {
+    padding: 9px 12px;
+  }
+
+  .aiInstall {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .repoItem {
+    padding: 10px;
+  }
+
+  .close {
+    padding: 6px 8px;
+  }
+}

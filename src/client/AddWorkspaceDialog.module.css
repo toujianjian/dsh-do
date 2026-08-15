@@ -23,6 +23,26 @@
   gap: 8px;
 }
 
+/* Mobile: full-width bottom sheet above the home indicator. */
+.cardMobile {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  padding: 14px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #c9ced3;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  color: #1f2328;
+  font-size: 14px;
+  line-height: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .heading {
   font-size: 14px;
   font-weight: 600;
