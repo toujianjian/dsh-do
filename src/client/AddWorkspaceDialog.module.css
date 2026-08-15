@@ -30,7 +30,7 @@
 }
 
 .hint {
-  color: var(--dsw-alias-label-secondary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   font-size: 12px;
   line-height: 17px;
 }

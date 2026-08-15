@@ -12,7 +12,7 @@
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.35));
+  border: 1.5px solid #8a919c;
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
@@ -77,7 +77,7 @@
 .close {
   border: none;
   background: transparent;
-  color: var(--dsw-alias-label-secondary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   font-size: 14px;
   line-height: 16px;
   cursor: pointer;
@@ -98,7 +98,7 @@
 .sectionTitle {
   font-size: 12px;
   font-weight: 600;
-  color: var(--dsw-alias-label-tertiary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
@@ -136,7 +136,7 @@
 }
 
 .muted {
-  color: var(--dsw-alias-label-tertiary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   font-size: 12px;
 }
 
@@ -182,7 +182,7 @@
 
 .sourceApp {
   color: #ffffff;
-  background: #59636e;
+  background: #444c56;
 }
 
 .discoverName {
@@ -197,7 +197,7 @@
 }
 
 .discoverMeta {
-  color: var(--dsw-alias-label-tertiary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   font-size: 12px;
 }
 
@@ -212,12 +212,12 @@
   border-radius: 999px;
   font-size: 11px;
   line-height: 16px;
-  color: var(--dsw-alias-label-secondary, #59636e);
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
+  color: var(--dsw-alias-label-secondary, #3f4753);
+  border: 1px solid var(--dsw-alias-border-l2, #8a919c);
 }
 
 .discoverDesc {
-  color: var(--dsw-alias-label-secondary, #59636e);
+  color: var(--dsw-alias-label-secondary, #3f4753);
   font-size: 12px;
   line-height: 17px;
   overflow: hidden;
