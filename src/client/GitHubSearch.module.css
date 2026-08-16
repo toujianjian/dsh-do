@@ -83,6 +83,36 @@
   gap: 8px;
 }
 
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e1e4e8;
+  padding-bottom: 6px;
+}
+
+.tab,
+.tabActive {
+  border: none;
+  background: transparent;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  color: #3f4753;
+  border-radius: 6px;
+}
+
+.tab:hover {
+  background: rgba(128, 128, 128, 0.1);
+  color: #1f2328;
+}
+
+.tabActive {
+  color: #0969da;
+  font-weight: 600;
+  background: rgba(9, 105, 218, 0.08);
+}
+
 .searchInput {
   flex: 1;
   min-width: 0;
