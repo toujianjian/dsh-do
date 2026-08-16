@@ -81,12 +81,10 @@ function resolveSpawnFacts(child: Context): { agentOptions: { provider: string; 
     if (provider !== undefined && model !== undefined && cwd !== undefined) break
   }
   if (provider === undefined || model === undefined) return undefined
-  if (cwd === undefined) {
-    const sandbox = child.get('sandboxPolicy')
-    const root = typeof sandbox?.workspaceRoot === 'string' && sandbox.workspaceRoot !== '' ? sandbox.workspaceRoot : undefined
-    cwd = root ?? homedir()
-  }
-  return { agentOptions: { provider, model }, cwd }
+  const sandbox = child.get('sandboxPolicy')
+  const fallbackCwd = typeof sandbox?.workspaceRoot === 'string' && sandbox.workspaceRoot !== '' ? sandbox.workspaceRoot : homedir()
+  const resolvedCwd = cwd !== undefined ? cwd : fallbackCwd
+  return { agentOptions: { provider, model }, cwd: resolvedCwd }
 }
 
 /**
