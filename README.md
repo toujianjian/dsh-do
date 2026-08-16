@@ -54,21 +54,21 @@ round 1 执行（模型工作、调用工具、验证）
 本插件是标准 DSH bundle 包（host-only，无 client）。任选一种分发形态：
 
 ```sh
+# GitHub（推荐，已发布：https://github.com/toujianjian/dsh-do）
+npx -p @deepseek-ai/dsh dsh plugin --profile web add github:toujianjian/dsh-do
+
 # tarball
 pnpm pack                                   # 生成 dsh-do-0.1.0.tgz
 npx -p @deepseek-ai/dsh dsh plugin --profile web add ./dsh-do-0.1.0.tgz
 
 # 本地路径（link 安装：目标目录需自带 node_modules，见下）
 npx -p @deepseek-ai/dsh dsh plugin --profile web add /path/to/dsh-do
-
-# Git（需先构建并提交 lib/，或提供 prepare 脚本）
-npx -p @deepseek-ai/dsh dsh plugin --profile web add github:<owner>/<repo>
 ```
 
 安装成功后**重启目标 profile** 生效。验证：
 
 ```sh
-npx -p @deepseek-ai/dsh dsh --profile web --dump-config   # 应出现 loop 行
+npx -p @deepseek-ai/dsh dsh --profile web --dump-config   # 应出现 dsh-do 行
 ```
 
 > 本地路径 `add` 使用 pnpm `link:` 语义：目标包被当作已安装，peer 依赖（`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`、`dsh-agent`、`dsh-llm`、`dsh-session`、`dsh-tools`、`dsh-system-prompt`）需要在该目录的 `node_modules` 中可解析。tarball/Git 安装由 pnpm 自动链接 peer，无此限制。
