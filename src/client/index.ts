@@ -1,17 +1,19 @@
 /**
- * dsh-DO browser half: the floating orb (draggable suggestion panel + real
- * GitHub `dsh-plugin` search) and the right-click "add workspace" flow that
- * reuses the sidebar's native add-workspace button.
+ * dsh-DO browser half: a GitHub search entry in the sidebar footer
+ * (`sidebar.footer.action`, GitHub icon) whose panel searches GitHub for
+ * `dsh-plugin` projects with per-hit "AI install", plus the right-click
+ * "add workspace" flow that reuses the sidebar's native add-workspace button.
  *
  * @module dsh-do/client
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-// Type-only: pulls the ui-layout SlotMap merge that declares `shell.overlay`.
-import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: pulls the ui-sidebar SlotMap merge that declares
+// `sidebar.footer.action` (and its `{ wide }` owner share).
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 // Type-only: pulls the ui-slots SlotMap/registration vocabulary.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { openAddWorkspaceDialog, setWorkspacesService } from './addWorkspace.ts'
-import { FloatingOrb } from './FloatingOrb.tsx'
+import { GitHubSearchButton } from './GitHubSearchButton.tsx'
 
 /** Required services: the slot registry and the workspaces face. */
 export const inject = ['slots', 'workspaces']
@@ -20,8 +22,8 @@ export const inject = ['slots', 'workspaces']
 const ADD_WORKSPACE_BUTTON_SELECTOR = 'button[aria-label="添加工作区"], button[aria-label="Add workspace"]'
 
 /**
- * Browser plugin body: right-click wiring for the native add-workspace
- * button plus the shell.overlay entry that renders the orb and dialogs.
+ * Browser plugin body: the sidebar-footer GitHub search entry plus the
+ * right-click wiring for the native add-workspace button.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
@@ -42,12 +44,13 @@ export function apply(ctx: ClientContext): void {
     return () => document.removeEventListener('contextmenu', onContextMenu)
   }, 'dsh-do: add-workspace context menu')
 
-  ctx.slots.inject('shell.overlay', () => {
+  ctx.slots.inject('sidebar.footer.action', () => {
     const dispose = ctx.slots.register({
-      name: 'shell.overlay',
-      id: 'dsh-do',
-      order: 90,
-    }, FloatingOrb)
+      name: 'sidebar.footer.action',
+      id: 'dsh-do-github',
+      order: 10,
+      label: 'GitHub 插件搜索',
+    }, GitHubSearchButton)
     return dispose
   })
 }
