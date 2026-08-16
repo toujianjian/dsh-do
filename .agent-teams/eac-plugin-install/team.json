@@ -1,0 +1,58 @@
+{
+  "name": "eac-plugin-install",
+  "id": "eac-plugin-install",
+  "description": "Install and verify DSH plugin zouyuxuan122/Deepseek-Harness-EAC on the web profile",
+  "captainSessionId": "dsh-do-install-24ea8466-7bf2-45ec-b410-7fc6b072387f",
+  "createdAt": 1786855861678,
+  "members": [
+    {
+      "id": "64e299bf-d98e-4f53-b71a-f8301b9c23cb",
+      "name": "engineer",
+      "role": "executor",
+      "joinedAt": 1786855879075,
+      "status": "idle"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "subject": "Verify repo is a valid DSH plugin",
+      "description": "Clone https://github.com/zouyuxuan122/Deepseek-Harness-EAC to a temp dir and verify it is a valid DSH plugin: (1) package.json exists and contains a \"dsh\" field with \"bundle\" entry (e.g. dsh.bundle pointing to a JS bundle file); (2) the referenced bundle/patch artifacts exist and are complete (non-empty, parseable); (3) ideally do a load check (e.g. node -e require the bundle or use dsh's own plugin validation if available). Report: repo structure, package.json name/version, the dsh.bundle path and whether it exists, any other dsh plugin fields, and a loadability verdict.",
+      "status": "failed",
+      "dependencies": [],
+      "createdAt": 1786855879119,
+      "updatedAt": 1786855918439,
+      "assignee": "engineer",
+      "output": "BLOCKED — cannot execute. My delegated toolset in this session contains only agent_teams_* tools, read_image, and report — there is NO shell/terminal tool, NO file-system tool, and NO network/web-fetch tool. Therefore I cannot: (1) git clone https://github.com/zouyuxuan122/Deepseek-Harness-EAC, (2) read/inspect package.json for the \"dsh\" field, (3) check bundle/patch artifact existence or loadability (node -e require), or (4) enumerate the repo's top-level structure. This is a fixed permission/toolset limitation of this subagent, not a problem with the repo. Recommendation: captain should either perform the clone+inspect directly with its own shell/fs tools, or re-delegate t1 to an agent that has bash/fs/network tools. No verdict on plugin validity can be produced from this session."
+    },
+    {
+      "id": "t2",
+      "subject": "Install plugin via dsh plugin CLI",
+      "description": "Run the DSH CLI install command: `dsh plugin --profile web add github:zouyuxuan122/Deepseek-Harness-EAC` (run from a suitable working dir; if the repo is an npm package published to npm, use the npm package name instead — first check `npm view <name>` for the package name found in step 1). Capture the full command output. Note: the DSH checkout lives at C:\\Users\\Huawei\\AppData\\Roaming\\QClaw\\npm-global\\node_modules\\@deepseek-ai\\dsh\\ in case CLI help or source inspection is needed. Report the exact command used and its output (success or error).",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": 1786855879156,
+      "updatedAt": 1786855879156
+    },
+    {
+      "id": "t3",
+      "subject": "Verify installation result and restart requirement",
+      "description": "After install, verify: (1) the plugin is registered at the bundle layer — inspect dsh's plugin registry/state (e.g. `dsh plugin --profile web list`, or check the profile config/plugins state files under the dsh data dir; use `dsh --dump-config` and any `dsh plugin list` subcommand). Confirm the plugin appears. (2) Confirm `--dump-config` output shows the plugin. (3) Determine whether the web profile needs a restart for the bundle to take effect — check if the bundle is injected at runtime startup (bundle registration is typically read at profile boot) vs hot-loaded. Report: evidence of registration (command outputs), whether --dump-config shows it, and a clear restart recommendation with reasoning.",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": 1786855881348,
+      "updatedAt": 1786855881348
+    },
+    {
+      "id": "t4",
+      "subject": "Static verification of user-provided outputs",
+      "description": "用户提供素材后做静态核验（不需要 shell）：(1) 用户贴出仓库 package.json 内容 → 核验是否存在 dsh.bundle 字段及其指向产物路径；(2) 用户贴出 `dsh plugin --profile web add github:zouyuxuan122/Deepseek-Harness-EAC` 输出 → 核验安装是否成功；(3) 用户贴出 `dsh plugin --profile web list` 与 `dsh --profile web --dump-config` 输出 → 核验 bundle 层注册与 dump-config 可见性；(4) 给出是否需重启 profile 的结论。逐项给出结论，由船长汇总。",
+      "status": "pending",
+      "assignee": "engineer",
+      "dependencies": [],
+      "createdAt": 1786856130071,
+      "updatedAt": 1786856130071
+    }
+  ],
+  "taskSeq": 4
+}
