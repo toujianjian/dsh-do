@@ -78,7 +78,10 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     setProjects((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
-      const q = terms.length === 0 ? SEARCH_QUERY : `${SEARCH_QUERY} ${terms}`
+      // Typed keywords search GitHub freely (no prefix), so repos without the
+      // topic tag — like Deepseek-Harness-EAC — are still findable. An empty
+      // query falls back to browsing tagged projects.
+      const q = terms.length === 0 ? SEARCH_QUERY : terms
       const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
         headers: { Accept: 'application/vnd.github+json' },
       })
@@ -96,9 +99,9 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     setPlugins((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
-      // Also GitHub: a plain `dsh-plugin` keyword query catches plugin repos
-      // that never bothered to add the topic tag.
-      const q = terms.length === 0 ? 'dsh-plugin' : `dsh-plugin ${terms}`
+      // Also GitHub: typed keywords search freely; the empty query browses
+      // plugin repos by keyword instead of by topic tag.
+      const q = terms.length === 0 ? 'dsh-plugin' : terms
       const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
         headers: { Accept: 'application/vnd.github+json' },
       })
@@ -208,7 +211,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
                 className={css.searchInput}
                 type="text"
                 spellCheck={false}
-                placeholder={tab === 'projects' ? '搜 GitHub 项目（留空 = topic:dsh-plugin）' : '搜 GitHub 插件仓库（留空 = dsh-plugin）'}
+                placeholder={tab === 'projects' ? '输入关键词自由搜索（留空浏览 dsh-plugin 项目）' : '输入关键词自由搜索（留空浏览 dsh 插件仓库）'}
                 value={query}
                 onChange={(event) => { setQuery(event.target.value) }}
               />
@@ -218,7 +221,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
             </form>
 
             {tab === 'projects' && projects.status === 'idle' && (
-              <div className={css.muted}>GitHub 上带 dsh-plugin 标签的项目（可加关键词过滤）。</div>
+              <div className={css.muted}>输入仓库名/关键词自由搜索 GitHub；留空浏览带 dsh-plugin 标签的项目。</div>
             )}
             {tab === 'projects' && projects.status === 'error' && (
               <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
@@ -228,7 +231,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
             )}
 
             {tab === 'plugins' && plugins.status === 'idle' && (
-              <div className={css.muted}>GitHub 上名称/描述含 dsh-plugin 的插件仓库（可加关键词过滤）。</div>
+              <div className={css.muted}>输入仓库名/关键词自由搜索 GitHub；留空浏览 dsh-plugin 相关仓库。</div>
             )}
             {tab === 'plugins' && plugins.status === 'error' && (
               <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
