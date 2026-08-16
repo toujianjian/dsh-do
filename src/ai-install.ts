@@ -8,6 +8,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { homedir } from 'node:os'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
@@ -36,6 +37,56 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
   res.end(JSON.stringify(value))
+}
+
+/**
+ * Resolve everything the spawned install agent needs to assemble its persona:
+ * a model route (deployment default, then any live agent) and a cwd (a live
+ * agent's session cwd, then the deployment workspace root, then home) —
+ * `{{model}}` and `{{cwd}}` in the persona must both have values.
+ */
+function resolveSpawnFacts(child: Context): { agentOptions: { provider: string; model: string }; cwd: string } | undefined {
+  const defaultModel = child.get('agentDefaultModel')
+  let provider: string | undefined
+  let model: string | undefined
+  if (typeof defaultModel?.currentSelection === 'function') {
+    try {
+      const selection = defaultModel.currentSelection()
+      if (
+        selection !== undefined &&
+        typeof selection.provider === 'string' && selection.provider !== '' &&
+        typeof selection.model === 'string' && selection.model !== ''
+      ) {
+        provider = selection.provider
+        model = selection.model
+      }
+    } catch {
+      /* fall through to live agents */
+    }
+  }
+  let cwd: string | undefined
+  for (const agent of child.agents.list()) {
+    if (provider === undefined || model === undefined) {
+      const candidateProvider = agent.options?.provider
+      const candidateModel = agent.options?.model
+      if (typeof candidateProvider === 'string' && candidateProvider !== '' && typeof candidateModel === 'string' && candidateModel !== '') {
+        provider = candidateProvider
+        model = candidateModel
+      }
+    }
+    if (cwd === undefined) {
+      const candidateCwd = agent.session?.header?.cwd
+      if (typeof candidateCwd === 'string' && candidateCwd !== '') cwd = candidateCwd
+    }
+    if (provider !== undefined && model !== undefined && cwd !== undefined) break
+  }
+  if (provider === undefined || model === undefined) return undefined
+  if (cwd === undefined) {
+    const sandbox = child.get('sandboxPolicy')
+    const root = typeof sandbox?.workspaceRoot === 'string' && sandbox.workspaceRoot !== '' ? sandbox.workspaceRoot : undefined
+    cwd = root ?? homedir()
+  }
+  return { agentOptions: { provider, model }, cwd }
 }
 
 /**
@@ -71,16 +122,17 @@ export function installAiInstallRoute(ctx: Context): void {
           }
           try {
             const sessionId = `dsh-do-install-${randomUUID()}` as SessionId
-            // The persona template renders `{{model}}`, so the new agent must
-            // carry a model route — inherit the deployment default selection.
-            const defaultModel = child.get('agentDefaultModel')
-            const selection = typeof defaultModel?.currentSelection === 'function' ? defaultModel.currentSelection() : undefined
-            const agentOptions = selection !== undefined && typeof selection.provider === 'string' && typeof selection.model === 'string'
-              ? { provider: selection.provider, model: selection.model }
-              : undefined
+            // The persona template renders `{{model}}` and `{{cwd}}`, so the
+            // new agent must carry a model route and a working directory.
+            const facts = resolveSpawnFacts(child)
+            if (facts === undefined) {
+              json(res, 500, { ok: false, error: 'no model route available (agentDefaultModel has no selection and no live agent has provider/model)' })
+              return
+            }
             const handle = await child.agents.create({
               sessionId,
-              ...(agentOptions === undefined ? {} : { agentOptions }),
+              agentOptions: facts.agentOptions,
+              meta: { cwd: facts.cwd },
             })
             handle.agent.followup(createUserMessage({
               content: [{ type: 'text', text: prompt }],
