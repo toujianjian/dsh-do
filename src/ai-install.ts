@@ -44,7 +44,7 @@ function json(res: ServerResponse, status: number, value: unknown): void {
  * @param ctx - the plugin context.
  */
 export function installAiInstallRoute(ctx: Context): void {
-  ctx.inject(['webServer', 'agents'], (child) => {
+  ctx.inject(['webServer', 'agents', 'agentDefaultModel'], (child) => {
     const server = child.get('webServer')
     child.effect(
       () => server.register({
@@ -71,7 +71,17 @@ export function installAiInstallRoute(ctx: Context): void {
           }
           try {
             const sessionId = `dsh-do-install-${randomUUID()}` as SessionId
-            const handle = await child.agents.create({ sessionId })
+            // The persona template renders `{{model}}`, so the new agent must
+            // carry a model route — inherit the deployment default selection.
+            const defaultModel = child.get('agentDefaultModel')
+            const selection = typeof defaultModel?.currentSelection === 'function' ? defaultModel.currentSelection() : undefined
+            const agentOptions = selection !== undefined && typeof selection.provider === 'string' && typeof selection.model === 'string'
+              ? { provider: selection.provider, model: selection.model }
+              : undefined
+            const handle = await child.agents.create({
+              sessionId,
+              ...(agentOptions === undefined ? {} : { agentOptions }),
+            })
             handle.agent.followup(createUserMessage({
               content: [{ type: 'text', text: prompt }],
               source: {
