@@ -15,8 +15,6 @@ interface GitHubRepo {
 /** Which GitHub query the panel is running. */
 type Tab = 'projects' | 'plugins'
 
-const SEARCH_QUERY = 'topic:dsh-plugin'
-
 /** GitHub Octocat mark (official path, rendered in the current text color). */
 function GitHubIcon() {
   return (
@@ -78,10 +76,9 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     setProjects((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
-      // Typed keywords search GitHub freely (no prefix), so repos without the
-      // topic tag — like Deepseek-Harness-EAC — are still findable. An empty
-      // query falls back to browsing tagged projects.
-      const q = terms.length === 0 ? SEARCH_QUERY : terms
+      // Generic GitHub project search: any keyword, no prefix. An empty query
+      // browses dsh-related projects.
+      const q = terms.length === 0 ? 'dsh' : terms
       const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
         headers: { Accept: 'application/vnd.github+json' },
       })
@@ -211,7 +208,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
                 className={css.searchInput}
                 type="text"
                 spellCheck={false}
-                placeholder={tab === 'projects' ? '输入关键词自由搜索（留空浏览 dsh-plugin 项目）' : '输入关键词自由搜索（留空浏览 dsh 插件仓库）'}
+                placeholder={tab === 'projects' ? '输入关键词搜索 GitHub 项目（留空浏览 dsh 相关）' : '输入关键词搜索插件仓库（留空浏览 dsh-plugin）'}
                 value={query}
                 onChange={(event) => { setQuery(event.target.value) }}
               />
@@ -221,7 +218,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
             </form>
 
             {tab === 'projects' && projects.status === 'idle' && (
-              <div className={css.muted}>输入仓库名/关键词自由搜索 GitHub；留空浏览带 dsh-plugin 标签的项目。</div>
+              <div className={css.muted}>通用项目搜索：输入任何关键词搜 GitHub 项目（不含安装）。</div>
             )}
             {tab === 'projects' && projects.status === 'error' && (
               <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
@@ -242,32 +239,17 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
 
             {tab === 'projects' && projects.status === 'done' && projects.repos.length > 0 && (
               <ul className={css.repoList}>
-                {projects.repos.map((repo) => {
-                  const install = installs[repo.full_name]
-                  return (
-                    <li key={repo.full_name} className={css.repoItem}>
-                      <div className={css.repoTop}>
-                        <a className={css.repoName} href={repo.html_url} target="_blank" rel="noreferrer">
-                          {repo.full_name}
-                        </a>
-                        <button
-                          type="button"
-                          className={css.aiInstall}
-                          disabled={install?.status === 'working'}
-                          onClick={() => { void aiInstall(repo.full_name, installPromptFor(repo)) }}
-                        >
-                          {install?.status === 'working' ? '启动中…' : 'AI 安装'}
-                        </button>
-                      </div>
-                      <span className={css.repoMeta}>
-                        {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
-                      </span>
-                      {repo.description !== null && <div className={css.repoDesc}>{repo.description}</div>}
-                      {install?.status === 'done' && <div className={css.installOk} role="status">{install.message}</div>}
-                      {install?.status === 'error' && <div className={css.errorText} role="status">{install.message}</div>}
-                    </li>
-                  )
-                })}
+                {projects.repos.map((repo) => (
+                  <li key={repo.full_name} className={css.repoItem}>
+                    <a className={css.repoName} href={repo.html_url} target="_blank" rel="noreferrer">
+                      {repo.full_name}
+                    </a>
+                    <span className={css.repoMeta}>
+                      {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
+                    </span>
+                    {repo.description !== null && <div className={css.repoDesc}>{repo.description}</div>}
+                  </li>
+                ))}
               </ul>
             )}
 
