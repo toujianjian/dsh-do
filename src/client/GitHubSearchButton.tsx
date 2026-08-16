@@ -12,15 +12,7 @@ interface GitHubRepo {
   language: string | null
 }
 
-/** One npm plugin search hit. */
-interface NpmPlugin {
-  name: string
-  version: string
-  description: string
-  repository?: string
-}
-
-/** Which discovery source the panel is searching. */
+/** Which GitHub query the panel is running. */
 type Tab = 'projects' | 'plugins'
 
 const SEARCH_QUERY = 'topic:dsh-plugin'
@@ -37,8 +29,8 @@ function GitHubIcon() {
   )
 }
 
-/** Build the install prompt for a GitHub repository. */
-function installPromptForRepo(repo: GitHubRepo): string {
+/** Build the install prompt handed to a brand-new session for one repo. */
+function installPromptFor(repo: GitHubRepo): string {
   return [
     `请帮我安装 DSH 插件：${repo.full_name}`,
     `仓库：${repo.html_url}`,
@@ -47,19 +39,6 @@ function installPromptForRepo(repo: GitHubRepo): string {
     '1. 先确认它是有效的 DSH 插件（package.json 含 dsh.bundle，且 patch/产物完整可加载）；',
     '2. 用 dsh plugin --profile web add github:<owner>/<repo> 安装（若它是 npm 包则用包名）；',
     '3. 验证安装结果（bundle 层已注册、--dump-config 能看到），并告诉我是否需要重启 profile 生效。',
-  ].join('\n')
-}
-
-/** Build the install prompt for an npm plugin package. */
-function installPromptForNpm(plugin: NpmPlugin): string {
-  return [
-    `请帮我安装 DSH 插件：${plugin.name}`,
-    `npm 包：https://www.npmjs.com/package/${plugin.name}`,
-    ...(plugin.repository === undefined ? [] : [`仓库：${plugin.repository}`]),
-    '',
-    '步骤：',
-    '1. 用 dsh plugin --profile web add <name> 安装（name 为上面的 npm 包名）；',
-    '2. 验证安装结果（bundle 层已注册、--dump-config 能看到），并告诉我是否需要重启 profile 生效。',
   ].join('\n')
 }
 
@@ -72,7 +51,7 @@ interface InstallState {
 
 /**
  * Sidebar GitHub button: opens a search panel with two tabs — "项目" (GitHub
- * `dsh-plugin` repositories, default) and "插件" (npm packages tagged
+ * `dsh-plugin` repositories, default) and "插件" (GitHub keyword search for
  * `dsh-plugin`) — each hit carrying an "AI install" button that opens a
  * brand-new session pre-filled with an install prompt. The right-click "add
  * workspace" dialog rides along.
@@ -87,9 +66,9 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     status: 'idle',
     repos: [],
   })
-  const [plugins, setPlugins] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; plugins: NpmPlugin[] }>({
+  const [plugins, setPlugins] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; repos: GitHubRepo[] }>({
     status: 'idle',
-    plugins: [],
+    repos: [],
   })
   const [installs, setInstalls] = useState<Record<string, InstallState>>({})
   const alive = useRef(true)
@@ -117,26 +96,19 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     setPlugins((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
-      const text = terms.length === 0 ? 'keywords:dsh-plugin' : `keywords:dsh-plugin ${terms}`
-      const response = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=8`)
-      if (!response.ok) throw new Error(`npm registry ${response.status}`)
-      const payload = (await response.json()) as {
-        objects?: Array<{ package?: { name?: unknown; version?: unknown; description?: unknown; links?: { repository?: unknown } } }>
-      }
+      // Also GitHub: a plain `dsh-plugin` keyword query catches plugin repos
+      // that never bothered to add the topic tag.
+      const q = terms.length === 0 ? 'dsh-plugin' : `dsh-plugin ${terms}`
+      const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
+        headers: { Accept: 'application/vnd.github+json' },
+      })
+      if (!response.ok) throw new Error(`GitHub API ${response.status}`)
+      const payload = (await response.json()) as { items?: GitHubRepo[] }
       if (!alive.current) return
-      const plugins = (payload.objects ?? [])
-        .map((entry) => entry.package)
-        .filter((pkg): pkg is NonNullable<typeof pkg> => pkg !== undefined && typeof pkg.name === 'string' && pkg.name.length > 0)
-        .map((pkg) => ({
-          name: pkg.name as string,
-          version: typeof pkg.version === 'string' ? pkg.version : '',
-          description: typeof pkg.description === 'string' ? pkg.description : '',
-          ...(typeof pkg.links?.repository === 'string' ? { repository: pkg.links.repository } : {}),
-        }))
-      setPlugins({ status: 'done', plugins })
+      setPlugins({ status: 'done', repos: payload.items ?? [] })
     } catch (error) {
       if (!alive.current) return
-      setPlugins({ status: 'error', plugins: [] })
+      setPlugins({ status: 'error', repos: [] })
     }
   }, [])
 
@@ -181,7 +153,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
         className={css.footerButton}
         aria-label="GitHub 插件搜索"
         aria-expanded={open}
-        title="插件发现（GitHub 项目 / npm 插件）"
+        title="插件发现（GitHub 项目 / 插件仓库）"
         onClick={() => { setOpen((current) => !current) }}
       >
         <GitHubIcon />
@@ -236,7 +208,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
                 className={css.searchInput}
                 type="text"
                 spellCheck={false}
-                placeholder={tab === 'projects' ? '搜 GitHub 项目（留空 = topic:dsh-plugin）' : '搜 npm 插件（留空 = keywords:dsh-plugin）'}
+                placeholder={tab === 'projects' ? '搜 GitHub 项目（留空 = topic:dsh-plugin）' : '搜 GitHub 插件仓库（留空 = dsh-plugin）'}
                 value={query}
                 onChange={(event) => { setQuery(event.target.value) }}
               />
@@ -256,13 +228,13 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
             )}
 
             {tab === 'plugins' && plugins.status === 'idle' && (
-              <div className={css.muted}>npm 上标了 keywords:dsh-plugin 的插件包（可加关键词过滤）。</div>
+              <div className={css.muted}>GitHub 上名称/描述含 dsh-plugin 的插件仓库（可加关键词过滤）。</div>
             )}
             {tab === 'plugins' && plugins.status === 'error' && (
-              <div className={css.errorText}>搜索失败（npm registry 不可用），稍后再试。</div>
+              <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
             )}
-            {tab === 'plugins' && plugins.status === 'done' && plugins.plugins.length === 0 && (
-              <div className={css.muted}>没有找到匹配的 dsh 插件包</div>
+            {tab === 'plugins' && plugins.status === 'done' && plugins.repos.length === 0 && (
+              <div className={css.muted}>没有找到匹配的 dsh 插件仓库</div>
             )}
 
             {tab === 'projects' && projects.status === 'done' && projects.repos.length > 0 && (
@@ -279,7 +251,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
                           type="button"
                           className={css.aiInstall}
                           disabled={install?.status === 'working'}
-                          onClick={() => { void aiInstall(repo.full_name, installPromptForRepo(repo)) }}
+                          onClick={() => { void aiInstall(repo.full_name, installPromptFor(repo)) }}
                         >
                           {install?.status === 'working' ? '启动中…' : 'AI 安装'}
                         </button>
@@ -296,32 +268,29 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
               </ul>
             )}
 
-            {tab === 'plugins' && plugins.status === 'done' && plugins.plugins.length > 0 && (
+            {tab === 'plugins' && plugins.status === 'done' && plugins.repos.length > 0 && (
               <ul className={css.repoList}>
-                {plugins.plugins.map((plugin) => {
-                  const install = installs[plugin.name]
+                {plugins.repos.map((repo) => {
+                  const install = installs[repo.full_name]
                   return (
-                    <li key={plugin.name} className={css.repoItem}>
+                    <li key={repo.full_name} className={css.repoItem}>
                       <div className={css.repoTop}>
-                        <a
-                          className={css.repoName}
-                          href={plugin.repository ?? `https://www.npmjs.com/package/${plugin.name}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {plugin.name}
+                        <a className={css.repoName} href={repo.html_url} target="_blank" rel="noreferrer">
+                          {repo.full_name}
                         </a>
                         <button
                           type="button"
                           className={css.aiInstall}
                           disabled={install?.status === 'working'}
-                          onClick={() => { void aiInstall(plugin.name, installPromptForNpm(plugin)) }}
+                          onClick={() => { void aiInstall(repo.full_name, installPromptFor(repo)) }}
                         >
                           {install?.status === 'working' ? '启动中…' : 'AI 安装'}
                         </button>
                       </div>
-                      {plugin.version.length > 0 && <span className={css.repoMeta}>v{plugin.version}</span>}
-                      {plugin.description.length > 0 && <div className={css.repoDesc}>{plugin.description}</div>}
+                      <span className={css.repoMeta}>
+                        {repo.stargazers_count} ★{repo.language === null ? '' : ` · ${repo.language}`}
+                      </span>
+                      {repo.description !== null && <div className={css.repoDesc}>{repo.description}</div>}
                       {install?.status === 'done' && <div className={css.installOk} role="status">{install.message}</div>}
                       {install?.status === 'error' && <div className={css.errorText} role="status">{install.message}</div>}
                     </li>
