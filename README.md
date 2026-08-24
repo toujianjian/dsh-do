@@ -35,7 +35,9 @@
 
 - 插件结果每条带 **AI 安装**按钮：点击 → host 端 `POST /dsh-do/ai-install` → 创建**全新会话**并注入安装提示词 → 新会话出现在侧边栏列表，agent 自动开始安装。
 - 安装提示词内置**校验步骤**：先确认 `dsh.bundle` 与产物完整可加载，再 `dsh plugin --profile web add github:<owner>/<repo>`，最后验证 `--dump-config` 并提示是否需要重启。
-- 新会话自动继承部署环境事实：模型路由（默认模型选择 → 兜底 live agent）+ 工作目录（live agent 会话 cwd → 部署工作区根 → 主目录），persona 的 `{{model}}`/`{{cwd}}` 不缺值。
+- **专属工作区**：每次 AI 安装都会在 DSH 安装目录下新建一个专属文件夹（`$DSH_HOME/dsh-do-installs/install-<uuid>`，`DSH_HOME` 未设置时用 `~/.dsh`），注册为正式 DSH 工作区，并把该目录作为新会话的 `cwd` —— 安装 agent 只在自己独立的工作区里干活，不会跑进用户其它工作区。
+- 新会话自动继承部署环境事实：模型路由（默认模型选择 → 兜底 live agent）+ 上面创建的专属工作区目录，persona 的 `{{model}}`/`{{cwd}}` 不缺值。
+- 新会话会**加入部署的 agent preset**（在 `agents.create` 的 `setup` 里 `agentPresets.mount`，并把 preset id 记进 session meta），因此和普通会话一样拥有完整工具能力（bash/fs/web/…），不是一个空工具列表的裸会话。
 
 ### ④ 右键添加工作区
 
