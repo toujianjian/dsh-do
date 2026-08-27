@@ -1,0 +1,14 @@
+- insert:
+    - id: loop-detector
+      name: dsh-loop-detector
+      config:
+        enabled: true
+        threshold: 3
+        maxRepeatLength: 100
+        checkInterval: 5000
+        retry:
+          enabled: true
+          maxRetries: 3
+          retryDelayMs: 1000
+          backoffMultiplier: 2
+          retryPrompt: 'You were detected to be looping on repeated text. Try again with a different structure and avoid repeating the same segment.'
