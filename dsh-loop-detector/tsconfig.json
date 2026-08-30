@@ -10,7 +10,7 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "outDir": "lib/types",
+    "outDir": "lib",
     "rootDir": "src",
     "sourceMap": true,
     "verbatimModuleSyntax": true,

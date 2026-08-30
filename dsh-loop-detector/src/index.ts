@@ -1,229 +1,240 @@
-import type { Context } from '@deepseek-ai/cordis';
-import type { Agent, AgentCancelCause } from '@deepseek-ai/dsh-agent';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import type { SessionId, UserMessage } from '@deepseek-ai/dsh-session';
+/**
+ * dsh-loop-detector — DSH Standard component.
+ *
+ * Detects model self-loops (long repeated text segments across recent
+ * messages) through the `messages.dsh/v1alpha1` `MessageObserver` protocol,
+ * records detection snapshots, and contributes `loop-detector.status` /
+ * `loop-detector.clear` commands.
+ *
+ * The MessageObserver protocol is read-only by design; this component does not
+ * cancel or rewrite messages. Hosts that want automatic termination can wire
+ * the exported `detectRepeat` / `LoopDetector` helpers to native agent control
+ * outside the standard protocol surface.
+ *
+ * @module dsh-loop-detector
+ */
+import { defineFacet, defineProtocolKey, protocol, optionalProtocol, type FacetModule } from '@dsh-std/sdk'
+import type { ActivationContext } from '@dsh-std/lifecycle'
+import {
+  API_VERSION as MESSAGES_API_VERSION,
+  KIND as MESSAGE_OBSERVER_KIND,
+} from '@dsh-std/messages'
+import type { ApiReference } from '@dsh-std/core'
 
-export interface RetryConfig {
-  enabled: boolean;
-  maxRetries: number;
-  retryDelayMs: number;
-  backoffMultiplier: number;
-  retryPrompt: string;
+/** MessageObserver client surface this component expects after negotiation. */
+export interface MessageObserverClient {
+  subscribe(handler: (event: MessageObserverEvent) => void, scope?: string): () => void
 }
 
-export interface LoopDetectorConfig {
-  enabled: boolean;
-  threshold: number;
-  maxRepeatLength: number;
-  checkInterval: number;
-  retry: RetryConfig;
+export interface MessageObserverEvent {
+  readonly eventType: 'messages.observe'
+  readonly eventVersion: '0.15'
+  readonly eventId: string
+  readonly scope: string
+  readonly sequence: number
+  readonly privacyClass: 'public' | 'internal' | 'sensitive'
+  readonly summary: string
+  readonly payload: {
+    readonly kind: 'message.created' | 'message.received' | 'message.sent'
+    readonly messageId?: string
+    readonly author?: string
+    readonly content: ReadonlyArray<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
+    readonly truncated?: boolean
+  }
 }
 
-export const LoopDetectorConfig: LoopDetectorConfig = {
-  enabled: true,
-  threshold: 3,
-  maxRepeatLength: 100,
-  checkInterval: 5000,
-  retry: {
-    enabled: true,
-    maxRetries: 3,
-    retryDelayMs: 1000,
-    backoffMultiplier: 2,
-    retryPrompt: 'You were detected to be looping on repeated text. Try again with a different structure and avoid repeating the same segment.',
+/** Typed accessor for the negotiated MessageObserver client. */
+export const messageObserverKey = defineProtocolKey<MessageObserverClient>(
+  { apiVersion: MESSAGES_API_VERSION, kind: MESSAGE_OBSERVER_KIND },
+  (agreement) => {
+    const binding = (agreement as unknown as { binding?: MessageObserverClient }).binding
+    if (binding === undefined) throw new Error('MessageObserver agreement has no binding')
+    return binding
   },
-};
+)
 
-type TimerId = ReturnType<typeof setTimeout>;
-
-interface AgentHistoryEntry {
-  agent: Agent;
-  texts: string[];
-  attempts: number;
+export interface LoopDetectorOptions {
+  threshold: number
+  minRepeatLength: number
+  maxHistory: number
 }
 
-export class LoopDetectorService {
-  static Config = LoopDetectorConfig;
-  private agentHistories = new Map<SessionId, AgentHistoryEntry>();
-  private retryTimers = new Map<SessionId, TimerId>();
+export const DEFAULT_OPTIONS: LoopDetectorOptions = Object.freeze({
+  threshold: 3,
+  minRepeatLength: 100,
+  maxHistory: 10,
+})
 
-  constructor(
-    private readonly ctx: Context,
-    private readonly config: LoopDetectorConfig,
-  ) {}
+export interface LoopDetectionRecord {
+  readonly scope: string
+  readonly detectedAt: number
+  readonly repeatingSegments: readonly string[]
+  readonly recentTexts: readonly string[]
+}
 
-  async install(): Promise<void> {
-    this.ctx.on('agent/inbox/inserted', ({ agent, message }: { agent: Agent; message: UserMessage }) => {
-      if (!this.config.enabled) return;
-      const text = this.flattenMessage(message);
-      if (text.length === 0) return;
-      this.addHistory(agent, text);
-    });
+/** Pure repetition detector over the most recent message texts. */
+export function detectRepeat(texts: readonly string[], options: LoopDetectorOptions = DEFAULT_OPTIONS): readonly string[] {
+  if (texts.length < 2) return []
+  const last = texts[texts.length - 1]
+  const prev = texts[texts.length - 2]
+  return commonSegments(last, prev, options.minRepeatLength)
+}
 
-    this.ctx.effect(() => {
-      const timer = setInterval(() => {
-        this.checkAllLoops();
-      }, this.config.checkInterval);
-      return () => clearInterval(timer);
-    });
-  }
-
-  private flattenMessage(message: UserMessage): string {
-    const parts: string[] = [];
-    for (const block of message.content) {
-      if (block.type === 'text') parts.push(block.text);
-      else if ('value' in block && typeof block.value === 'string') parts.push(block.value);
-    }
-    return parts.join('\n');
-  }
-
-  private addHistory(agent: Agent, text: string): void {
-    let entry = this.agentHistories.get(agent.id) ?? {
-      agent,
-      texts: [],
-      attempts: 1,
-    };
-    entry.agent = agent;
-    entry.texts.push(text);
-    if (entry.texts.length > 10) entry.texts.shift();
-    this.agentHistories.set(agent.id, entry);
-  }
-
-  private getAttempts(agentId: SessionId): number {
-    return this.agentHistories.get(agentId)?.attempts ?? 1;
-  }
-
-  private nextAttempt(agentId: SessionId): number {
-    const entry = this.agentHistories.get(agentId);
-    if (!entry) return 1;
-    const next = entry.attempts + 1;
-    entry.attempts = next;
-    return next;
-  }
-
-  private resetAttempts(agentId: SessionId): void {
-    const entry = this.agentHistories.get(agentId);
-    if (entry) entry.attempts = 1;
-  }
-
-  private retryMessage(attempt: number): string {
-    return `[retry #${attempt}] ${this.config.retry.retryPrompt}`;
-  }
-
-  private scheduleRetry(agent: Agent, attempt: number, repeats: string[]): void {
-    const delayMs =
-      this.config.retry.retryDelayMs *
-      Math.pow(
-        this.config.retry.backoffMultiplier,
-        Math.max(attempt - 1, 0),
-      );
-
-    this.ctx.logger.warn(
-      `Detected loop for agent ${agent.id} (attempt ${attempt}); retrying in ${delayMs}ms with fresh follow-up`,
-    );
-
-    const timer = setTimeout(() => {
-      this.performRetry(agent, attempt, repeats);
-    }, delayMs);
-
-    this.retryTimers.set(agent.id, timer);
-  }
-
-  private performRetry(agent: Agent, attempt: number, repeats: string[]): void {
-    const entry = this.agentHistories.get(agent.id);
-    if (!entry) return;
-
-    const recent = entry.texts.slice(-this.config.threshold).join('\n');
-    const content = [
-      {
-        type: 'text' as const,
-        text: `${this.retryMessage(attempt)}\n\nRecent repeated segment sample:\n${repeats[0] ?? ''}\n\nRecent history:\n${recent}`,
-      },
-    ];
-
-    try {
-      agent.followup(createUserMessage({ content, source: { kind: 'plugin' as const, plugin: 'dsh-loop-detector' } }));
-      this.resetAttempts(agent.id);
-    } catch (error) {
-      this.ctx.logger.error(`Failed to retry agent ${agent.id}: ${error}`);
-      this.abortAgent(agent.id);
+function commonSegments(a: string, b: string, minLength: number): readonly string[] {
+  const segments: string[] = []
+  const aLen = a.length
+  const bLen = b.length
+  if (aLen < minLength || bLen < minLength) return segments
+  for (let i = 0; i <= aLen - minLength; i++) {
+    for (let j = minLength; j <= aLen - i; j++) {
+      const substr = a.slice(i, i + j)
+      if (b.includes(substr)) segments.push(substr)
     }
   }
+  return [...new Set(segments)].sort((x, y) => y.length - x.length)
+}
 
-  private checkAllLoops(): void {
-    for (const [agentId, entry] of this.agentHistories.entries()) {
-      if (entry.texts.length < this.config.threshold) continue;
+function flattenContent(content: MessageObserverEvent['payload']['content']): string {
+  const parts: string[] = []
+  for (const block of content) {
+    if (block.type === 'text') parts.push(block.text)
+  }
+  return parts.join('\n')
+}
 
-      const repeats = this.findRepeatingSegments(entry.texts, this.config.maxRepeatLength);
-      if (repeats.length === 0) continue;
+/** Session-scoped detector state. */
+export class LoopDetector {
+  private readonly history = new Map<string, string[]>()
+  private readonly records = new Map<string, LoopDetectionRecord[]>()
 
-      const agent = this.ctx.agents.get(agentId as SessionId) as Agent | undefined;
-      if (!agent) {
-        this.cleanupAgentState(entry.agent.id);
-        continue;
-      }
+  constructor(private readonly options: LoopDetectorOptions = DEFAULT_OPTIONS) {}
 
-      const currentAttempt = this.getAttempts(entry.agent.id);
-      if (this.config.retry.enabled && currentAttempt <= this.config.retry.maxRetries) {
-        this.scheduleRetry(agent, this.nextAttempt(entry.agent.id), repeats);
-        continue;
-      }
+  observe(scope: string, text: string): LoopDetectionRecord | undefined {
+    if (text.length === 0) return undefined
+    let texts = this.history.get(scope) ?? []
+    texts = [...texts, text]
+    if (texts.length > this.options.maxHistory) texts = texts.slice(texts.length - this.options.maxHistory)
+    this.history.set(scope, texts)
 
-      this.ctx.logger.warn(
-        `Detected loop for agent ${agentId}, repeating segments: ${repeats.join(', ')}`,
-      );
-      this.abortAgent(entry.agent.id);
+    const repeats = detectRepeat(texts, this.options)
+    if (repeats.length === 0 || texts.length < this.options.threshold) return undefined
+
+    const record: LoopDetectionRecord = Object.freeze({
+      scope,
+      detectedAt: Date.now(),
+      repeatingSegments: Object.freeze(repeats.slice()),
+      recentTexts: Object.freeze(texts.slice()),
+    })
+    const list = this.records.get(scope) ?? []
+    this.records.set(scope, [...list.slice(-9), record])
+    return record
+  }
+
+  status(scope?: string): readonly LoopDetectionRecord[] {
+    if (scope === undefined) return Object.freeze([...this.records.values()].flat())
+    return Object.freeze(this.records.get(scope) ?? [])
+  }
+
+  clear(scope?: string): void {
+    if (scope === undefined) {
+      this.history.clear()
+      this.records.clear()
+      return
     }
+    this.history.delete(scope)
+    this.records.delete(scope)
   }
+}
 
-  private abortAgent(agentId: SessionId): void {
-    const agent = this.ctx.agents.get(agentId) as Agent | undefined;
-    if (!agent) return;
-    agent.cancel({ kind: 'hook', reason: 'plugin:loop-detector' } as AgentCancelCause);
-    this.cleanupAgentState(agentId);
-  }
+/** Shared detector instance for command handlers and the facet activation. */
+let sharedDetector: LoopDetector | undefined
 
-  private cleanupAgentState(agentId: SessionId): void {
-    this.agentHistories.delete(agentId);
-    const timer = this.retryTimers.get(agentId);
-    if (timer) {
-      clearTimeout(timer);
-      this.retryTimers.delete(agentId);
-    }
-  }
+export function detector(): LoopDetector {
+  if (sharedDetector === undefined) sharedDetector = new LoopDetector()
+  return sharedDetector
+}
 
-  private findRepeatingSegments(history: string[], minLength: number): string[] {
-    const repeats: string[] = [];
-    if (history.length < 2) return repeats;
-    const last = history[history.length - 1];
-    const prev = history[history.length - 2];
-    const segments = this.getCommonSegments(last, prev, minLength);
-    repeats.push(...segments);
-    return [...new Set(repeats)];
-  }
+const STATUS_COMMAND_ID = 'loop-detector.status'
+const CLEAR_COMMAND_ID = 'loop-detector.clear'
 
-  private getCommonSegments(a: string, b: string, minLength: number): string[] {
-    const segments: string[] = [];
-    const aLen = a.length;
-    const bLen = b.length;
-    if (aLen < minLength || bLen < minLength) return segments;
+export interface LoopDetectorCommandHandler {
+  execute(input: { readonly rawInput: string }, context: { readonly signal: AbortSignal }): { kind: 'success'; text: string } | { kind: 'error'; text: string }
+}
 
-    for (let i = 0; i <= aLen - minLength; i++) {
-      for (let j = minLength; j <= aLen - i; j++) {
-        const substr = a.substring(i, i + j);
-        if (b.includes(substr)) {
-          segments.push(substr);
+function formatRecord(record: LoopDetectionRecord): string {
+  const sample = record.repeatingSegments[0] ?? ''
+  const preview = sample.length > 200 ? `${sample.slice(0, 200)}…` : sample
+  return `[${new Date(record.detectedAt).toISOString()}] scope=${record.scope} repeats=${record.repeatingSegments.length} longest=${record.repeatingSegments[0]?.length ?? 0}\n  sample: ${preview}`
+}
+
+function statusHandler(input: { readonly rawInput: string }, context: { readonly signal: AbortSignal }): LoopDetectorCommandHandler['execute'] extends (...args: never[]) => infer R ? R : never {
+  const scope = input.rawInput.trim() === '' ? undefined : input.rawInput.trim()
+  const records = detector().status(scope)
+  if (records.length === 0) return { kind: 'success', text: 'No self-loop detections recorded.' }
+  const body = records.map(formatRecord).join('\n')
+  return { kind: 'success', text: `Loop detector — ${records.length} detection(s):\n${body}` }
+}
+
+function clearHandler(input: { readonly rawInput: string }, context: { readonly signal: AbortSignal }): LoopDetectorCommandHandler['execute'] extends (...args: never[]) => infer R ? R : never {
+  const scope = input.rawInput.trim() === '' ? undefined : input.rawInput.trim()
+  detector().clear(scope)
+  return { kind: 'success', text: scope === undefined ? 'Cleared all detection history.' : `Cleared detection history for scope ${scope}.` }
+}
+
+export const commandHandlers: ReadonlyRecord<string, LoopDetectorCommandHandler> = Object.freeze({
+  [STATUS_COMMAND_ID]: { execute: statusHandler } as unknown as LoopDetectorCommandHandler,
+  [CLEAR_COMMAND_ID]: { execute: clearHandler } as unknown as LoopDetectorCommandHandler,
+})
+
+type ReadonlyRecord<K extends string, V> = { readonly [P in K]: V }
+
+export const loopDetectorFacet: FacetModule = defineFacet(
+  function activate(context: ActivationContext): void {
+    const detectorInstance = detector()
+
+    const observer = optionalProtocol(context, messageObserverKey)
+    if (observer.available) {
+      const unsubscribe = observer.client.subscribe((event) => {
+        if (event.payload.kind !== 'message.received' && event.payload.kind !== 'message.sent') return
+        const text = flattenContent(event.payload.content)
+        if (text.length === 0) return
+        const record = detectorInstance.observe(event.scope, text)
+        if (record !== undefined) {
+          console.warn(`[loop-detector] self-loop detected in scope ${record.scope}; ${record.repeatingSegments.length} repeating segment(s). Use command "loop-detector.status" to inspect.`)
         }
-      }
+      })
+      context.scope.add(unsubscribe)
+    } else {
+      console.warn('[loop-detector] MessageObserver unavailable; detection commands are registered but no live self-loop detection will occur.')
     }
 
-    return segments.sort((a, b) => b.length - a.length);
-  }
-}
+    const publishCommands = context.extensions.publish
+    const disposeStatus = publishCommands(
+      { apiVersion: 'commands.dsh/v1alpha1', kind: 'Command' } as ApiReference,
+      STATUS_COMMAND_ID,
+      commandHandlers[STATUS_COMMAND_ID],
+    )
+    context.scope.add(disposeStatus)
+    const disposeClear = publishCommands(
+      { apiVersion: 'commands.dsh/v1alpha1', kind: 'Command' } as ApiReference,
+      CLEAR_COMMAND_ID,
+      commandHandlers[CLEAR_COMMAND_ID],
+    )
+    context.scope.add(disposeClear)
+  },
+  function deactivate(reason: string): void {
+    // The cleanup scope already removes the subscription and command extensions.
+    // Preserve detection records across deactivation so a re-activation or a
+    // status query can still report the last known loops.
+    void reason
+  },
+  function snapshot() {
+    const records = detector().status()
+    return {
+      state: 'active' as const,
+      message: records.length === 0 ? undefined : `${records.length} detection(s) recorded`,
+    }
+  },
+)
 
-export default function apply(ctx: Context, config: LoopDetectorConfig): void {
-  const service = new LoopDetectorService(ctx, config);
-  ctx.effect(() => {
-    void service.install();
-    return () => undefined;
-  }, 'loop-detector');
-}
+export default loopDetectorFacet

@@ -1,0 +1,76 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@dsh-std/core':
+        specifier: ^0.1.1-rc.1
+        version: 0.1.1-rc.1
+      '@dsh-std/lifecycle':
+        specifier: ^0.1.1-rc.1
+        version: 0.1.1-rc.1
+      '@dsh-std/messages':
+        specifier: ^0.1.1-rc.1
+        version: 0.1.1-rc.1
+      '@dsh-std/sdk':
+        specifier: ^0.1.1-rc.1
+        version: 0.1.1-rc.1
+
+packages:
+
+  '@dsh-std/composition@0.1.1-rc.1':
+    resolution: {integrity: sha512-1pW2ZarnX4lS089y0rR6Myg77FX21j++GxodTSb4WE7uUwLr9IPM1EXsP7o112gH3LkImVxqQt1G8Q20bqtCUg==}
+    engines: {node: ^22.19 || >=24}
+
+  '@dsh-std/core@0.1.1-rc.1':
+    resolution: {integrity: sha512-I2tZEYk0V5QjlvkLvqKkAj/Fsvz0bTe0oDF2YFzL8EpmOS9KNcILrLBGSdVrt1qZnlBZP+9Zzh2byJzG0dJiOQ==}
+    engines: {node: ^22.19 || >=24}
+
+  '@dsh-std/lifecycle@0.1.1-rc.1':
+    resolution: {integrity: sha512-OuA6VBPOtC0KkTbWHLlFxNp3ZFNkFccmeCRSSzlTLspQ0ETo6lsvXPGFSosWC6f/DuUFoxFOGCLi4VafZrZ1Ag==}
+    engines: {node: ^22.19 || >=24}
+
+  '@dsh-std/manifest@0.1.1-rc.1':
+    resolution: {integrity: sha512-BTte8eZnZiD+bdu1wrITl8ukV0DldC69ALyCHznTqrfXOe8iYjBJIBzbVAxVbFkxw7v1MD5qi7VMcROAvoJ0kg==}
+    engines: {node: ^22.19 || >=24}
+
+  '@dsh-std/messages@0.1.1-rc.1':
+    resolution: {integrity: sha512-Wgq4VNYCHydbDgSZG8tQrNaJepF+fyWVJOfZiGP8q7LylkVhAAT5wq8tPaW41rkMl71xbXtgdmGtqOD+pvee3Q==}
+    engines: {node: ^22.19 || >=24}
+
+  '@dsh-std/sdk@0.1.1-rc.1':
+    resolution: {integrity: sha512-YaMFlTzJQb6+bF/o7gSgi4VrmdqSc3aB/J+OuxOc5AzGAnmpfCXkMF0s1zXAMT4PTKzYdAsRPObWXvk1PNIJFA==}
+    engines: {node: ^22.19 || >=24}
+
+snapshots:
+
+  '@dsh-std/composition@0.1.1-rc.1':
+    dependencies:
+      '@dsh-std/core': 0.1.1-rc.1
+      '@dsh-std/manifest': 0.1.1-rc.1
+
+  '@dsh-std/core@0.1.1-rc.1': {}
+
+  '@dsh-std/lifecycle@0.1.1-rc.1':
+    dependencies:
+      '@dsh-std/composition': 0.1.1-rc.1
+      '@dsh-std/core': 0.1.1-rc.1
+      '@dsh-std/manifest': 0.1.1-rc.1
+
+  '@dsh-std/manifest@0.1.1-rc.1':
+    dependencies:
+      '@dsh-std/core': 0.1.1-rc.1
+
+  '@dsh-std/messages@0.1.1-rc.1':
+    dependencies:
+      '@dsh-std/core': 0.1.1-rc.1
+
+  '@dsh-std/sdk@0.1.1-rc.1':
+    dependencies:
+      '@dsh-std/core': 0.1.1-rc.1
+      '@dsh-std/lifecycle': 0.1.1-rc.1

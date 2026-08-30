@@ -1,0 +1,59 @@
+{
+  "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.json",
+  "manifestVersion": "0.15",
+  "id": "dsh.std.loop-detector",
+  "name": "dsh-loop-detector",
+  "version": "0.2.0",
+  "facets": {
+    "host": {
+      "entry": "lib/index.js",
+      "apiVersion": "v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": [
+      {
+        "apiVersion": "commands.dsh/v1alpha1",
+        "kind": "Command"
+      },
+      {
+        "apiVersion": "messages.dsh/v1alpha1",
+        "kind": "MessageObserver",
+        "optional": true,
+        "fallback": "run without message observation; detection commands still register but no live self-loop detection occurs"
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "name": "messages.observe.read",
+      "scope": "session",
+      "reason": "Detect repeated long text segments across recent messages to identify model self-loops."
+    }
+  ],
+  "subscriptions": [
+    {
+      "apiVersion": "messages.dsh/v1alpha1",
+      "kind": "MessageObserver",
+      "scope": "session:*"
+    }
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "loop-detector.status",
+        "title": "Loop Detector: Show recent self-loop detections",
+        "description": "Print the most recent model self-loop segments the loop detector recorded for this session."
+      },
+      {
+        "id": "loop-detector.clear",
+        "title": "Loop Detector: Clear detection history",
+        "description": "Discard the recorded repetition history for this session."
+      }
+    ]
+  },
+  "license": "MIT",
+  "source": {
+    "repository": "https://github.com/toujianjian/dsh-do"
+  }
+}
