@@ -19,7 +19,7 @@ DSH Standard 组件，按 `messages.dsh/v1alpha1` 观察消息并检测模型自
 ```ts
 import { registerNativeLoopDetectorBridge, configureNativeLoopDetector, onNativeLoopDetected } from 'dsh-loop-detector/native'
 
-configureNativeLoopDetector({ maxRetries: 5, retryDelayMs: 200, backoffMultiplier: 2 })
+configureNativeLoopDetector({ maxRetries: 20, retryDelayMs: 5000, backoffMultiplier: 1 })
 
 registerNativeLoopDetectorBridge(
   {
@@ -32,6 +32,8 @@ onNativeLoopDetected((record, bridge) => {
   void bridge.actions.cancel?.(record)
 })
 ```
+
+默认值：`maxRetries=20`、`retryDelayMs=5000`、`backoffMultiplier=1`。
 
 ## 安装
 

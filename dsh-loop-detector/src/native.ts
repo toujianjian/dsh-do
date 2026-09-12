@@ -13,20 +13,20 @@ export interface NativeLoopDetectorActions {
 }
 
 export interface NativeLoopDetectorSettings {
-  /** Maximum retry attempts before cancel. Default: 3. */
+  /** Maximum retry attempts before cancel. Default: 20. */
   maxRetries: number
-  /** Base delay in ms before the first retry. Default: 0. */
+  /** Base delay in ms before the first retry. Default: 5000. */
   retryDelayMs: number
-  /** Multiplier for delay between retries. Default: 2. */
+  /** Multiplier for delay between retries. Default: 1. */
   backoffMultiplier: number
 }
 
 export interface NativeLoopDetectorBridgeOptions {
-  /** Maximum retry attempts before cancel. Default: 3. */
+  /** Maximum retry attempts before cancel. Default: 20. */
   maxRetries?: number
-  /** Base delay in ms before the first retry. Default: 0. */
+  /** Base delay in ms before the first retry. Default: 5000. */
   retryDelayMs?: number
-  /** Multiplier for delay between retries. Default: 2. */
+  /** Multiplier for delay between retries. Default: 1. */
   backoffMultiplier?: number
 }
 
