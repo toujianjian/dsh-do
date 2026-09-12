@@ -1,5 +1,5 @@
 /**
- * dsh-loop-detector — DSH Standard component.
+ * dsh-loop-detector …?DSH Standard component.
  *
  * Detects model self-loops (long repeated text segments across recent
  * messages) through the `messages.dsh/v1alpha1` `MessageObserver` protocol,

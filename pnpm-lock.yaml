@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      dsh-loop-detector:
+        specifier: link:dsh-loop-detector
+        version: link:dsh-loop-detector
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1

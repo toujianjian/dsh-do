@@ -1,5 +1,5 @@
-/**
- * dsh-loop-detector — DSH Standard component.
+﻿/**
+ * dsh-loop-detector …?DSH Standard component.
  *
  * Detects model self-loops (long repeated text segments across recent
  * messages) through the `messages.dsh/v1alpha1` `MessageObserver` protocol,
@@ -47,9 +47,11 @@ export interface MessageObserverEvent {
 export const messageObserverKey = defineProtocolKey<MessageObserverClient>(
   { apiVersion: MESSAGES_API_VERSION, kind: MESSAGE_OBSERVER_KIND },
   (agreement) => {
-    const binding = (agreement as unknown as { binding?: MessageObserverClient }).binding
-    if (binding === undefined) throw new Error('MessageObserver agreement has no binding')
-    return binding
+    const binding = (agreement as unknown as { binding?: MessageObserverClient }).binding;
+    // 当 binding 不存在时（host 没实现 MessageObserver），fromAgreement 返回 undefined，
+    // optionalProtocol 会检测到 client 为 undefined，从而返回 { available: false }
+    if (binding === undefined) return undefined as unknown as MessageObserverClient;
+    return binding;
   },
 )
 
@@ -172,7 +174,7 @@ function statusHandler(input: { readonly rawInput: string }, context: { readonly
   const records = detector().status(scope)
   if (records.length === 0) return { kind: 'success', text: 'No self-loop detections recorded.' }
   const body = records.map(formatRecord).join('\n')
-  return { kind: 'success', text: `Loop detector — ${records.length} detection(s):\n${body}` }
+  return { kind: 'success', text: `Loop detector …?${records.length} detection(s):\n${body}` }
 }
 
 function clearHandler(input: { readonly rawInput: string }, context: { readonly signal: AbortSignal }): LoopDetectorCommandHandler['execute'] extends (...args: never[]) => infer R ? R : never {

@@ -1,5 +1,5 @@
 /**
- * dsh-loop-detector — DSH Standard component.
+ * dsh-loop-detector …?DSH Standard component.
  *
  * Detects model self-loops (long repeated text segments across recent
  * messages) through the `messages.dsh/v1alpha1` `MessageObserver` protocol,
@@ -18,8 +18,10 @@ import { API_VERSION as MESSAGES_API_VERSION, KIND as MESSAGE_OBSERVER_KIND, } f
 /** Typed accessor for the negotiated MessageObserver client. */
 export const messageObserverKey = defineProtocolKey({ apiVersion: MESSAGES_API_VERSION, kind: MESSAGE_OBSERVER_KIND }, (agreement) => {
     const binding = agreement.binding;
+    // 当 binding 不存在时（host 没实现 MessageObserver），fromAgreement 返回 undefined，
+    // optionalProtocol 会检测到 client 为 undefined，从而返回 { available: false }
     if (binding === undefined)
-        throw new Error('MessageObserver agreement has no binding');
+        return undefined;
     return binding;
 });
 export const DEFAULT_OPTIONS = Object.freeze({
@@ -109,8 +111,8 @@ export function detector() {
         sharedDetector = new LoopDetector();
     return sharedDetector;
 }
-const STATUS_COMMAND_ID = 'loop-detector.status';
-const CLEAR_COMMAND_ID = 'loop-detector.clear';
+const STATUS_COMMAND_ID = 'status';
+const CLEAR_COMMAND_ID = 'clear';
 function formatRecord(record) {
     const sample = record.repeatingSegments[0] ?? '';
     const preview = sample.length > 200 ? `${sample.slice(0, 200)}…` : sample;
@@ -122,7 +124,7 @@ function statusHandler(input, context) {
     if (records.length === 0)
         return { kind: 'success', text: 'No self-loop detections recorded.' };
     const body = records.map(formatRecord).join('\n');
-    return { kind: 'success', text: `Loop detector — ${records.length} detection(s):\n${body}` };
+    return { kind: 'success', text: `Loop detector …?${records.length} detection(s):\n${body}` };
 }
 function clearHandler(input, context) {
     const scope = input.rawInput.trim() === '' ? undefined : input.rawInput.trim();
@@ -136,7 +138,7 @@ export const commandHandlers = Object.freeze({
 export const loopDetectorFacet = defineFacet(function activate(context) {
     const detectorInstance = detector();
     const observer = optionalProtocol(context, messageObserverKey);
-    if (observer.available) {
+    if (observer.available && observer.client) {
         const unsubscribe = observer.client.subscribe((event) => {
             if (event.payload.kind !== 'message.received' && event.payload.kind !== 'message.sent')
                 return;
