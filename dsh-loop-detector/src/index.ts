@@ -157,8 +157,19 @@ export function detector(): LoopDetector {
   return sharedDetector
 }
 
-const STATUS_COMMAND_ID = 'loop-detector.status'
-const CLEAR_COMMAND_ID = 'loop-detector.clear'
+/**
+ * Contribution ids as declared in dsh-plugin.json `contributes.commands`.
+ * The host projects each id to its local name (last dot-separated segment) and
+ * the facet must publish under that projected name, so derive it identically.
+ */
+const STATUS_CONTRIBUTION_ID = 'loop-detector.status'
+const CLEAR_CONTRIBUTION_ID = 'loop-detector.clear'
+const STATUS_COMMAND_ID = localCommandName(STATUS_CONTRIBUTION_ID)
+const CLEAR_COMMAND_ID = localCommandName(CLEAR_CONTRIBUTION_ID)
+
+function localCommandName(contributionId: string): string {
+  return contributionId.split('.').at(-1) ?? contributionId
+}
 
 export interface LoopDetectorCommandHandler {
   execute(input: { readonly rawInput: string }, context: { readonly signal: AbortSignal }): { kind: 'success'; text: string } | { kind: 'error'; text: string }
@@ -196,7 +207,7 @@ export const loopDetectorFacet: FacetModule = defineFacet(
     const detectorInstance = detector()
 
     const observer = optionalProtocol(context, messageObserverKey)
-    if (observer.available) {
+    if (observer.available && observer.client !== undefined) {
       const unsubscribe = observer.client.subscribe((event) => {
         if (event.payload.kind !== 'message.received' && event.payload.kind !== 'message.sent') return
         const text = flattenContent(event.payload.content)

@@ -9,6 +9,14 @@ export interface NativeLoopDetectorActions {
     cancel?(record: LoopDetectionRecord): void | Promise<void>;
     retry?(record: LoopDetectionRecord): void | Promise<void>;
 }
+export interface NativeLoopDetectorSettings {
+    /** Maximum retry attempts before cancel. Default: 3. */
+    maxRetries: number;
+    /** Base delay in ms before the first retry. Default: 0. */
+    retryDelayMs: number;
+    /** Multiplier for delay between retries. Default: 2. */
+    backoffMultiplier: number;
+}
 export interface NativeLoopDetectorBridgeOptions {
     /** Maximum retry attempts before cancel. Default: 3. */
     maxRetries?: number;
@@ -22,6 +30,10 @@ export interface NativeLoopDetectorBridge {
     readonly options: Required<NativeLoopDetectorBridgeOptions>;
 }
 type Listener = (record: LoopDetectionRecord, bridge: NativeLoopDetectorBridge) => void;
+/** Read the currently configured retry settings. */
+export declare function getNativeLoopDetectorSettings(): NativeLoopDetectorSettings;
+/** Update retry settings. This is the intended host/settings hook. */
+export declare function configureNativeLoopDetector(partial: Partial<NativeLoopDetectorSettings>): NativeLoopDetectorSettings;
 /** Subscribe to native-mode loop detections. Returns an unsubscribe function. */
 export declare function onNativeLoopDetected(listener: Listener): () => void;
 /** Emit a detection to any registered native listeners. */

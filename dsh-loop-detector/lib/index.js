@@ -112,8 +112,18 @@ export function detector() {
         sharedDetector = new LoopDetector();
     return sharedDetector;
 }
-const STATUS_COMMAND_ID = 'loop-detector.status';
-const CLEAR_COMMAND_ID = 'loop-detector.clear';
+/**
+ * Contribution ids as declared in dsh-plugin.json `contributes.commands`.
+ * The host projects each id to its local name (last dot-separated segment) and
+ * the facet must publish under that projected name, so derive it identically.
+ */
+const STATUS_CONTRIBUTION_ID = 'loop-detector.status';
+const CLEAR_CONTRIBUTION_ID = 'loop-detector.clear';
+const STATUS_COMMAND_ID = localCommandName(STATUS_CONTRIBUTION_ID);
+const CLEAR_COMMAND_ID = localCommandName(CLEAR_CONTRIBUTION_ID);
+function localCommandName(contributionId) {
+    return contributionId.split('.').at(-1) ?? contributionId;
+}
 function formatRecord(record) {
     const sample = record.repeatingSegments[0] ?? '';
     const preview = sample.length > 200 ? `${sample.slice(0, 200)}…` : sample;
@@ -139,7 +149,7 @@ export const commandHandlers = Object.freeze({
 export const loopDetectorFacet = defineFacet(function activate(context) {
     const detectorInstance = detector();
     const observer = optionalProtocol(context, messageObserverKey);
-    if (observer.available) {
+    if (observer.available && observer.client !== undefined) {
         const unsubscribe = observer.client.subscribe((event) => {
             if (event.payload.kind !== 'message.received' && event.payload.kind !== 'message.sent')
                 return;

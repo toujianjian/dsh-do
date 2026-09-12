@@ -17,14 +17,15 @@ DSH Standard 组件，按 `messages.dsh/v1alpha1` 观察消息并检测模型自
 宿主可导入 `dsh-loop-detector/native` 把检测事件接到本地 agent 操作：
 
 ```ts
-import { registerNativeLoopDetectorBridge, onNativeLoopDetected } from 'dsh-loop-detector/native'
+import { registerNativeLoopDetectorBridge, configureNativeLoopDetector, onNativeLoopDetected } from 'dsh-loop-detector/native'
+
+configureNativeLoopDetector({ maxRetries: 5, retryDelayMs: 200, backoffMultiplier: 2 })
 
 registerNativeLoopDetectorBridge(
   {
     cancel: async (record) => await yourAgent.cancel(record.scope),
     retry: async (record) => await yourAgent.retry(record.scope),
   },
-  { maxRetries: 3, retryDelayMs: 0, backoffMultiplier: 2 },
 )
 
 onNativeLoopDetected((record, bridge) => {

@@ -6,7 +6,24 @@
  */
 const listeners = new Set();
 let bridge;
-const retryAttempts = new Map();
+let settings = {
+    maxRetries: 3,
+    retryDelayMs: 0,
+    backoffMultiplier: 2,
+};
+/** Read the currently configured retry settings. */
+export function getNativeLoopDetectorSettings() {
+    return settings;
+}
+/** Update retry settings. This is the intended host/settings hook. */
+export function configureNativeLoopDetector(partial) {
+    settings = {
+        maxRetries: partial.maxRetries ?? settings.maxRetries,
+        retryDelayMs: partial.retryDelayMs ?? settings.retryDelayMs,
+        backoffMultiplier: partial.backoffMultiplier ?? settings.backoffMultiplier,
+    };
+    return settings;
+}
 /** Subscribe to native-mode loop detections. Returns an unsubscribe function. */
 export function onNativeLoopDetected(listener) {
     listeners.add(listener);
@@ -15,7 +32,7 @@ export function onNativeLoopDetected(listener) {
 /** Emit a detection to any registered native listeners. */
 export function emitNativeLoopDetected(record) {
     for (const listener of listeners) {
-        listener(record, bridge ?? { actions: {}, options: { maxRetries: 3, retryDelayMs: 0, backoffMultiplier: 2 } });
+        listener(record, bridge ?? { actions: {}, options: settings });
     }
 }
 /** Register a host-provided native actions bridge. */
@@ -23,9 +40,9 @@ export function registerNativeLoopDetectorBridge(actions, options = {}) {
     bridge = {
         actions,
         options: {
-            maxRetries: options.maxRetries ?? 3,
-            retryDelayMs: options.retryDelayMs ?? 0,
-            backoffMultiplier: options.backoffMultiplier ?? 2,
+            maxRetries: options.maxRetries ?? settings.maxRetries,
+            retryDelayMs: options.retryDelayMs ?? settings.retryDelayMs,
+            backoffMultiplier: options.backoffMultiplier ?? settings.backoffMultiplier,
         },
     };
     return bridge;
@@ -36,7 +53,8 @@ export function getNativeLoopDetectorBridge() {
 }
 /** Reset retry counters. Mostly useful in tests. */
 export function resetNativeLoopRetryAttempts() {
-    retryAttempts.clear();
+    // No cross-call retry accounting is kept; the bridge itself is bounded by the
+    // configured maxRetries on each call.
 }
 /** Clear all listeners. Mostly useful in tests. */
 export function clearNativeLoopDetectorListeners() {
@@ -47,18 +65,23 @@ export async function runNativeLoopRetryBridge(record, bridgeOverride) {
     const current = bridgeOverride ?? getNativeLoopDetectorBridge();
     if (!current)
         return { retried: 0, canceled: false };
-    let delay = current.options.retryDelayMs;
+    const effective = {
+        maxRetries: current.options.maxRetries ?? settings.maxRetries,
+        retryDelayMs: current.options.retryDelayMs ?? settings.retryDelayMs,
+        backoffMultiplier: current.options.backoffMultiplier ?? settings.backoffMultiplier,
+    };
+    let delay = effective.retryDelayMs;
     let retried = 0;
     let canceled = false;
-    if (current.options.maxRetries <= 0 || typeof current.actions.retry !== 'function') {
+    if (effective.maxRetries <= 0 || typeof current.actions.retry !== 'function') {
         return { retried: 0, canceled: await runCancel(current, record) };
     }
-    for (let attempt = 0; attempt < current.options.maxRetries; attempt += 1) {
+    for (let attempt = 0; attempt < effective.maxRetries; attempt += 1) {
         if (delay > 0)
             await sleep(delay);
         await current.actions.retry(record);
         retried += 1;
-        delay = Math.round(delay * current.options.backoffMultiplier) || current.options.retryDelayMs;
+        delay = Math.round(delay * effective.backoffMultiplier) || effective.retryDelayMs;
     }
     if (!canceled) {
         canceled = await runCancel(current, record);
