@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-loop-detector …?DSH Standard component.
  *
  * Detects model self-loops (long repeated text segments across recent
@@ -20,6 +20,7 @@ import {
   KIND as MESSAGE_OBSERVER_KIND,
 } from '@dsh-std/messages'
 import type { ApiReference } from '@dsh-std/core'
+import { emitNativeLoopDetected } from './native.js'
 
 /** MessageObserver client surface this component expects after negotiation. */
 export interface MessageObserverClient {
@@ -202,6 +203,7 @@ export const loopDetectorFacet: FacetModule = defineFacet(
         if (text.length === 0) return
         const record = detectorInstance.observe(event.scope, text)
         if (record !== undefined) {
+          emitNativeLoopDetected(record)
           console.warn(`[loop-detector] self-loop detected in scope ${record.scope}; ${record.repeatingSegments.length} repeating segment(s). Use command "loop-detector.status" to inspect.`)
         }
       })

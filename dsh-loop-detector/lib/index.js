@@ -15,6 +15,7 @@
  */
 import { defineFacet, defineProtocolKey, protocol, optionalProtocol } from '@dsh-std/sdk';
 import { API_VERSION as MESSAGES_API_VERSION, KIND as MESSAGE_OBSERVER_KIND, } from '@dsh-std/messages';
+import { emitNativeLoopDetected } from './native.js';
 /** Typed accessor for the negotiated MessageObserver client. */
 export const messageObserverKey = defineProtocolKey({ apiVersion: MESSAGES_API_VERSION, kind: MESSAGE_OBSERVER_KIND }, (agreement) => {
     const binding = agreement.binding;
@@ -111,8 +112,8 @@ export function detector() {
         sharedDetector = new LoopDetector();
     return sharedDetector;
 }
-const STATUS_COMMAND_ID = 'status';
-const CLEAR_COMMAND_ID = 'clear';
+const STATUS_COMMAND_ID = 'loop-detector.status';
+const CLEAR_COMMAND_ID = 'loop-detector.clear';
 function formatRecord(record) {
     const sample = record.repeatingSegments[0] ?? '';
     const preview = sample.length > 200 ? `${sample.slice(0, 200)}…` : sample;
@@ -138,7 +139,7 @@ export const commandHandlers = Object.freeze({
 export const loopDetectorFacet = defineFacet(function activate(context) {
     const detectorInstance = detector();
     const observer = optionalProtocol(context, messageObserverKey);
-    if (observer.available && observer.client) {
+    if (observer.available) {
         const unsubscribe = observer.client.subscribe((event) => {
             if (event.payload.kind !== 'message.received' && event.payload.kind !== 'message.sent')
                 return;
@@ -147,6 +148,7 @@ export const loopDetectorFacet = defineFacet(function activate(context) {
                 return;
             const record = detectorInstance.observe(event.scope, text);
             if (record !== undefined) {
+                emitNativeLoopDetected(record);
                 console.warn(`[loop-detector] self-loop detected in scope ${record.scope}; ${record.repeatingSegments.length} repeating segment(s). Use command "loop-detector.status" to inspect.`);
             }
         });
