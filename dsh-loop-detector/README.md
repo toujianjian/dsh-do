@@ -19,10 +19,13 @@ DSH Standard 组件，按 `messages.dsh/v1alpha1` 观察消息并检测模型自
 ```ts
 import { registerNativeLoopDetectorBridge, onNativeLoopDetected } from 'dsh-loop-detector/native'
 
-registerNativeLoopDetectorBridge({
-  cancel: async (record) => await yourAgent.cancel(record.scope),
-  retry: async (record) => await yourAgent.retry(record.scope),
-})
+registerNativeLoopDetectorBridge(
+  {
+    cancel: async (record) => await yourAgent.cancel(record.scope),
+    retry: async (record) => await yourAgent.retry(record.scope),
+  },
+  { maxRetries: 3, retryDelayMs: 0, backoffMultiplier: 2 },
+)
 
 onNativeLoopDetected((record, bridge) => {
   void bridge.actions.cancel?.(record)
