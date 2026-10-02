@@ -135,12 +135,24 @@ patch(
 	if (goal !== null) rows.push(...projectGoalSection(goal, opts.width));`,
 )
 
-// 3. Pass the snapshot's loop view through.
-patch(
-	'call site',
-	'return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols });',
-	'return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols }, snapshot.loop ?? null);',
-)
+// 3. Pass the snapshot's loop view through. The call site has two shapes in the
+// wild: 0.1.1-rc.6 passes a one-line options object, while 0.1.2-rc.31 and
+// 1.0.0-rc.2 spread it across lines and add `sessionTotals`. Both are handled;
+// a future shape change trips the REQUIRED check below instead of silently
+// wiring nothing.
+const CALL_LEGACY_FROM = 'return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols });'
+const CALL_LEGACY_TO = 'return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols }, snapshot.loop ?? null);'
+const CALL_MODERN_FROM = `	const rows = projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, {
+		width: snapshot.cols,
+		sessionTotals: snapshot.sessionTotals
+	});`
+const CALL_MODERN_TO = `	const rows = projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, {
+		width: snapshot.cols,
+		sessionTotals: snapshot.sessionTotals
+	}, snapshot.loop ?? null);`
+
+patch('call site (one-line options)', CALL_LEGACY_FROM, CALL_LEGACY_TO, { optional: true })
+patch('call site (spread options)', CALL_MODERN_FROM, CALL_MODERN_TO, { optional: true })
 
 // 4b. Upgrade an install patched by the previous revision (same reason as 1b).
 patch('snapshot field upgrade', OLD_SNAPSHOT_LINE, NEW_SNAPSHOT_LINE, { optional: true })
@@ -148,10 +160,14 @@ patch('snapshot field upgrade', OLD_SNAPSHOT_LINE, NEW_SNAPSHOT_LINE, { optional
 // 4. Expose the loop view on the render snapshot, read from the `loops` service.
 patch('snapshot field', OLD_SNAPSHOT_BLOCK, `${OLD_SNAPSHOT_BLOCK}\n${NEW_SNAPSHOT_LINE}`)
 
-// The two markers that prove the current revision is in place.
+// The markers that prove every edit landed. The call-site marker matters most:
+// its two variants are both optional, so without it an unrecognised future
+// shape would pass unnoticed and the section would simply never receive data.
 const REQUIRED = [
 	['guarded loop renderer', 'const asText = (value, fallback) =>'],
 	['loops service lookup', 'reflect.get("loops", false)?.list?.().get(String(this.activeSessionId))'],
+	['panel call site', '}, snapshot.loop ?? null);'],
+	['panel assembly', 'function projectStatusPanel(goal, todos, plan, opts, loop = null) {'],
 ]
 
 console.log('applied :', applied.length ? applied.join(', ') : '(none)')

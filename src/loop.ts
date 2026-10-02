@@ -1,13 +1,15 @@
 /**
  * Pure loop domain: durable state shape, identities, and deterministic
- * transitions. No runtime dependency beyond `node:crypto`; type-only imports
- * keep the module side-effect free.
+ * transitions. No runtime dependency beyond `node:crypto` and the side-effect
+ * free {@link module:dsh-do/session-log} reader; type-only imports keep the
+ * platform coupling to types.
  *
  * @module dsh-do/loop
  */
 import { randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
+import { readSessionEvents } from './session-log.js'
 
 /** Stable identity of one loop. */
 export type LoopId = string & { readonly __loopId: unique symbol }
@@ -219,7 +221,7 @@ export function isLoopSource(source: unknown): source is LoopMessageSource {
  */
 export function admittedRounds(agent: Agent, loopId: string): number {
 	let max = 0
-	for (const event of agent.session.events) {
+	for (const event of readSessionEvents(agent.session)) {
 		if (event.type !== 'user/message') continue
 		const source = (event.data as UserMessage).source
 		if (isLoopSource(source) && source.loopId === loopId && Number.isSafeInteger(source.round) && source.round > max) {

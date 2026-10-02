@@ -13,6 +13,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { LoopController } from './controller.js'
 import { effectiveRounds, isLoopSource, type LoopState } from './loop.js'
 import { renderLoopWrapupContext } from './prompt.js'
+import { readSessionEvents } from './session-log.js'
 
 /** Execution-time authority checks for the model-facing loop tools. */
 
@@ -22,7 +23,7 @@ function reject(message: string, code = 'LOOP_TOOL_AUTHORITY_REQUIRED'): never {
 
 /** Locate the open turn enclosing a model tool call. */
 function openTurn(agent: Agent): { events: readonly SessionEvent[] } {
-	const events = agent.session.events
+	const events = readSessionEvents(agent.session)
 	for (let index = events.length - 1; index >= 0; index -= 1) {
 		const boundary = events[index]
 		if (boundary?.type === 'turn/end') {

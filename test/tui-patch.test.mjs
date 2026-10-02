@@ -9,9 +9,9 @@
  * the call happens inside a render timer the exception killed the whole TUI
  * process — the first time a loop was running and `/status` was opened.
  *
- * These tests patch a minimal fixture that reproduces the real anchors, then
- * execute the injected renderer against both the true projection shape and a
- * fully-populated service view.
+ * The fixtures reproduce the real anchor text of three published TUI releases:
+ * 0.1.1-rc.6 passes a one-line options object to projectStatusPanel, while
+ * 0.1.2-rc.31 and 1.0.0-rc.2 spread it across lines and add `sessionTotals`.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -31,18 +31,43 @@ const SNAPSHOT_BLOCK = [
 	'\t\t\tplan: this.projectionCache?.plan ?? null,',
 ].join('\n')
 
+/** Exactly what tui 0.1.1-rc.6 ships. */
+const CALL_ONE_LINE = `function renderStatusPanel(snapshot) {
+	return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols });
+}`
+
+/** Exactly what tui 0.1.2-rc.31 and 1.0.0-rc.2 ship. */
+const CALL_SPREAD = `function renderStatusPanel(snapshot) {
+	if (!snapshot.statusPanelVisible) return [];
+	const rows = projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, {
+		width: snapshot.cols,
+		sessionTotals: snapshot.sessionTotals
+	});
+	rows.push(inspectHint(snapshot.cols));
+	return rows;
+}`
+
+/** A shape no released version uses, to prove the patcher fails loudly. */
+const CALL_UNKNOWN = `function renderStatusPanel(snapshot) {
+	return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, snapshot.opts);
+}`
+
 /**
  * A minimal stand-in for the TUI bundle: it carries the four anchor sites the
  * patcher edits, and a `truncateByWidth$4` that fails on non-strings exactly the
  * way the real one does.
  */
-const FIXTURE = `function truncateByWidth$4(text, width) {
+function fixtureSource(callSite) {
+	return `function truncateByWidth$4(text, width) {
 	let out = "";
 	for (const ch of text) {
 		if (out.length >= width) break;
 		out += ch;
 	}
 	return out;
+}
+function inspectHint(cols) {
+	return "";
 }
 /** 计划段：active/pending 徽标单行。 */
 function projectGoalSection(goal, width) {
@@ -53,9 +78,7 @@ function projectStatusPanel(goal, todos, plan, opts) {
 	if (goal !== null) rows.push(...projectGoalSection(goal, opts.width));
 	return rows;
 }
-function renderStatusPanel(snapshot) {
-	return projectStatusPanel(snapshot.goal, snapshot.todos ?? [], snapshot.plan, { width: snapshot.cols });
-}
+${callSite}
 class App {
 	constructor(ctx) {
 		this.ctx = ctx;
@@ -71,30 +94,67 @@ ${SNAPSHOT_BLOCK}
 }
 export { projectLoopSection, App, renderStatusPanel };
 `
-
-/**
- * Patch a fresh fixture in a temp dir and import the result.
- * @returns the imported module plus the temp dir for cleanup.
- */
-function patchedFixture() {
-	const dir = mkdtempSync(join(tmpdir(), 'dsh-do-tui-patch-'))
-	const file = join(dir, 'bundle.mjs')
-	writeFileSync(file, FIXTURE)
-	const out = execFileSync(process.execPath, [patcher, file], { encoding: 'utf8' })
-	assert.match(out, /written/, `patcher did not write the fixture:\n${out}`)
-	return { dir, file, mod: import(pathToFileURL(file).href) }
 }
 
-test('patcher injects a guarded loop renderer and a loops-service lookup', async () => {
-	const { dir, file, mod } = patchedFixture()
+/**
+ * Patch a fresh fixture in a temp dir.
+ * @returns the temp dir, the patched file, and a promise for the imported module.
+ */
+function patchedFixture(callSite = CALL_ONE_LINE, { expectOk = true } = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'dsh-do-tui-patch-'))
+	const file = join(dir, 'bundle.mjs')
+	writeFileSync(file, fixtureSource(callSite))
+	let out = ''
+	let failed = null
 	try {
-		const source = readFileSync(file, 'utf8')
-		assert.match(source, /const asText = \(value, fallback\) =>/)
-		assert.match(source, /reflect\.get\("loops", false\)/)
-		assert.doesNotMatch(source, /projectionCache\?\.loop/)
-		const check = execFileSync(process.execPath, [patcher, file, '--check'], { encoding: 'utf8' })
-		assert.match(check, /CHECK: patched/)
-		await mod
+		out = execFileSync(process.execPath, [patcher, file], { encoding: 'utf8' })
+	} catch (error) {
+		failed = error
+		out = `${error.stdout ?? ''}${error.stderr ?? ''}`
+	}
+	if (expectOk) {
+		assert.equal(failed, null, `patcher failed unexpectedly:\n${out}`)
+		assert.match(out, /written/, `patcher did not write the fixture:\n${out}`)
+	}
+	return { dir, file, out, mod: import(pathToFileURL(file).href) }
+}
+
+/** Run the patcher against a fixture and return its combined output and status. */
+function runPatcher(args) {
+	try {
+		return { code: 0, out: execFileSync(process.execPath, [patcher, ...args], { encoding: 'utf8' }) }
+	} catch (error) {
+		return { code: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` }
+	}
+}
+
+for (const [label, callSite] of [['one-line options', CALL_ONE_LINE], ['spread options', CALL_SPREAD]]) {
+	test(`wires the snapshot's loop view through the ${label} call site`, async () => {
+		const { dir, file, mod } = patchedFixture(callSite)
+		try {
+			const source = readFileSync(file, 'utf8')
+			assert.match(source, /const asText = \(value, fallback\) =>/)
+			assert.match(source, /reflect\.get\("loops", false\)/)
+			assert.match(source, /snapshot\.loop \?\? null\)/)
+			assert.doesNotMatch(source, /projectionCache\?\.loop/)
+			assert.match(runPatcher([file, '--check']).out, /CHECK: patched/)
+			await mod
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+}
+
+test('an unrecognised call-site shape fails loudly and writes nothing', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'dsh-do-tui-patch-'))
+	const file = join(dir, 'bundle.mjs')
+	const before = fixtureSource(CALL_UNKNOWN)
+	writeFileSync(file, before)
+	try {
+		const { code, out } = runPatcher([file])
+		assert.equal(code, 4, `expected a hard failure, got:\n${out}`)
+		assert.match(out, /panel call site/)
+		assert.equal(readFileSync(file, 'utf8'), before, 'a failed patch must not leave a partial write')
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
 	}
@@ -104,8 +164,7 @@ test('patcher is idempotent: a second run changes nothing', () => {
 	const { dir, file } = patchedFixture()
 	try {
 		const before = readFileSync(file, 'utf8')
-		const out = execFileSync(process.execPath, [patcher, file], { encoding: 'utf8' })
-		assert.match(out, /no change needed/)
+		assert.match(runPatcher([file]).out, /no change needed/)
 		assert.equal(readFileSync(file, 'utf8'), before)
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
@@ -116,9 +175,9 @@ test('a leading flag is not mistaken for the target path', async () => {
 	const { dir, file, mod } = patchedFixture()
 	try {
 		await mod
-		const check = execFileSync(process.execPath, [patcher, '--check', file], { encoding: 'utf8' })
-		assert.match(check, /CHECK: patched/)
-		assert.doesNotMatch(check, /bundle not found/)
+		const { out } = runPatcher(['--check', file])
+		assert.match(out, /CHECK: patched/)
+		assert.doesNotMatch(out, /bundle not found/)
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
 	}

@@ -279,3 +279,74 @@ TUI profile 的安装前备份保存在 `%TEMP%\dsh-do-tui-backup\`（`package.j
 
 第二轮 Host SHA256：`BBD0B03734760BBF750905CBC10A52B324FA24762A2088A70C6B9C6F5F0BB7F2`。
 第二轮 Client SHA256：`8CC88802094D43A6EAA60E00ABA639A2ABF0E6EB57F60F200C3C5E7AB1A724E4`。
+
+## 第六轮（本轮：DSH 多版本适配）
+
+用户在装有 Docker 的机器上要求"多测几个容器版本，适配 0.1.5-rc.3"。本机在用 DSH 0.1.0-rc.8，而 0.1.5-rc.3 起平台 API 有实质性变更，因此本轮把验证从"单版本组合打印"推进到**四个真实 TTY 组合**。
+
+### 发现并修复的两处不兼容
+
+**1）`agent.session.events` 在 0.1.5-rc.3 被移除（真实崩溃）**
+
+0.1.5-rc.3 之前，会话日志由 `Session` 的 getter 暴露：`get events(): readonly SessionEvent[]`。0.1.5-rc.3 删掉了该 getter，改为 `snapshotEvents(fromSeq?, toSeqExclusive?)`（物化半开区间的冻结快照，无参即整段日志）与 `ownEvents()`（**排除** fork 继承前缀）。dsh-do 两处读旧 getter，于是 `/loop` 直接失败：
+
+```
+❯ /loop 验证状态栏循环段
+⚠ 命令执行失败: agent.session.events is not iterable
+⏸ driver-failed · the loop driver failed: agent.session.events is not iterable
+```
+
+两处调用点都要**完整日志**（`admittedRounds` 统计已承认轮次、`openTurn` 从尾部回溯回合边界），所以对应物是 `snapshotEvents()` 而**不是** `ownEvents()`。新增 `src/session-log.ts` 的 `readSessionEvents()` 按能力探测：优先新访问器，缺失则回退旧 getter，两者皆无或形状不认识时返回空日志而非抛错——这两处一个在驱动轮次记账上、一个在工具调用内，抛错的代价远大于数错。回退方向已核实：本机 0.1.0-rc.8 的 `dsh-session` 里没有 `snapshotEvents`/`ownEvents`，只有 `get events()`，因此老版本走的是回退分支。
+
+**2）TUI 状态栏补丁的调用形状变了**
+
+`@huiliyi37/dsh-tianshu-tui` 0.1.2-rc.31 与 1.0.0-rc.2 把 `projectStatusPanel(...)` 的调用从单行 `{ width: snapshot.cols }` 改成跨行展开并多了 `sessionTotals`，旧补丁的锚点找不到（`FAILED call site: anchor not found`，退出码 3）。补丁脚本改为同时支持两种调用形状（都是 `optional`），并把调用点形状列为 `REQUIRED` 标记——形状再变时**明确失败并不写文件**，而不是静默打歪。
+
+**3）`peerDependencies` 未覆盖 0.2.x（被平台主动拒绝装载）**
+
+dsh 0.2.0-rc.2 有版本闸门，按 `peerDependencies` 拒绝不匹配的插件，dsh-do 的 `^0.1.0-rc.6` 覆盖不到 0.2.x：
+
+```
+dsh: skipping profile bundle "dsh-do": Error: Plugin dsh-do@0.1.0 is incompatible with
+dsh 0.2.0-rc.2: peerDependencies {"@deepseek-ai/dsh-agent":"^0.1.0-rc.6", ...}
+```
+
+`^0.1.0-rc.6 || ^0.2.0-rc.1` 是向后兼容的放宽（0.1.x 仍全部命中）。**先验证后放宽**：用放宽后的构建装进 0.2.0-rc.2 profile，`id: do` 被接纳，且在真实 TTY 里 `/loop` 与 `◆ 循环` 段都正常（见下表），才保留该改动。
+
+### 版本矩阵（均为容器内真实 TTY 实跑）
+
+Docker 环境：`test-docker/`，Debian + Node 24 + pnpm + 真实 PTY（`script`），每个组合重建一个独立 profile，`--dump-config` 断言 `id: do` 存在，再进 TUI 敲 `/loop` 与 `/status`。
+
+| dsh | dsh-tui | 组合接纳 `id: do` | `/loop` | `◆ 循环` 段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| 0.1.0-rc.8 | 0.1.1-rc.6 | 是 | `Loop started` | 渲染 | 旧路径回归（旧 getter + 旧单行调用形状） |
+| 0.1.5-rc.3 | 0.1.2-rc.31 | 是 | `Loop restarted` | 轮次 + 暂停原因 | **本轮目标版本**；修复后才通 |
+| 0.1.7-rc.2 | 0.1.2-rc.31 | 是 | 正常 | 轮次 + 暂停原因 | 启动期另有 `typert-loader … has no create() factory`，来自 TUI 与 DSH 自身错配，与 dsh-do 无关 |
+| 0.2.0-rc.2 | 1.0.0-rc.2 | 是（放宽 peer 后） | `Loop restarted` | 轮次 + 暂停原因 | 未放宽前被闸门拒绝 |
+
+四个组合的启动期错误里**没有一条**来自 dsh-do。0.1.5-rc.3 与 0.2.0-rc.2 上循环还实际推进到「↻ 轮次 1/20」——容器用的是哑元凭证，第 1 轮必然因模型调用失败而暂停，这恰好证明**驱动被唤醒并真的跑了第 1 轮**，且暂停原因 `agent-error · the agent reported an error while the loop was running` 正确显示在状态栏上。
+
+### 复测
+
+- `npm run typecheck`：Host 与 Client 双 `tsc --noEmit` 干净。
+- `npm test`（完整构建 + 真实 Loader）：**198 用例 / 198 通过 / 0 失败 / 0 跳过**（基线 189，本轮 +9：`test/session-log.test.mjs` 7 个钉住跨版本读取与"无日志不抛错"，`test/tui-patch.test.mjs` +2 钉住新调用形状与"形状不认识就明确失败且不写文件"）。
+- 本轮 Host 构建哈希：`lib/index.js` = `EF1276525D7A79EF6F98FD2F041A749D8FCE40BC967C93FE7DFA32836303B1EF`（四个容器组合安装副本的哈希都与之一致）；`lib/types/session-log.js` = `33CD73B39136ECB077AFF6B9E84EF4280087F37C55E2AE6A778B60BD9BF6B728`。
+
+### 黑窗补丁：已撤销，且上游已自行修好
+
+上一轮为本机 Windows 加的 `windowsHide` 补丁**已撤销**：本机 `node_modules` 里被改的文件逐字节还原为发布 tarball（sha256 `F3A11B8AD2D3E01CA9943E9EC919465D8D4525E60FDD6904DA0D4494FE00C247`），补丁脚本从仓库删除。原因是上游已经修了，且修得比补丁更贴切：0.1.5-rc.3 起 `dsh-subprocess-local` 在 spawn 处带 `windowsHide: platform === "win32"`（只在真的会有控制台时隐藏），0.1.7-rc.2 / 0.2.0-rc.2 类似。
+
+**需要明确告知用户**：本机当前在用的 0.1.0-rc.8 只写 `detached: platform !== "win32"`，**没有** `windowsHide`——所以**在升级到 ≥0.1.5-rc.3 之前，黑窗会回来**。这是上游版本差异，不是本插件能修的层。
+
+### 容器脚手架的坑（非产品缺陷，已记入 `test-docker/README.md`）
+
+- **凭证文件格式跨版本变过**：0.1.5-rc.3 起 dsh 自己写的正是数字 `version: 1`，而 0.1.0-rc.8 要求 `version` 是**字符串**——数字会让 `dsh-credentials-local` 抛 TypeError 并把整个 profile 启动打掉。同时 TUI 0.1.2-rc.x 的首次运行会弹「设置 DeepSeek API Key」引导吞掉所有按键。故 `seed-credentials.sh` 分 `seed` / `clear` 两种模式。
+- **`cordis-plugin-hmr` 钉子只对 rc.8 需要**：rc.8 的 `dsh-app-boot` 调 `hmr.registerConfig`，而全新安装解析到的 1.0.19 已删除该 API（本机在用的是 1.0.17）。0.1.5-rc.3 起 `dsh-base` 自己精确依赖 1.0.17，hmr 甚至不在依赖树里，故 `matrix-version.sh` 只在 `0.1.0-rc.8` 时注入该 override。
+- PowerShell 里 `docker exec … bash -c '<多语句>'` 会返回空输出或截断（大输出尤其），须改为"写 `.sh` → `docker cp` → 执行 → 落盘 → 再 `docker cp` 出来读"。
+
+### 仍未声称完成
+
+- **Web 端多版本适配未验**：本轮四个组合都是 TUI。Web 半（Client slot、`/dsh-do/settings` 路由、设置页交互）只在 0.1.0-rc.8 上验过，0.1.5-rc.3 / 0.2.0-rc.2 下的 Web 组合尚未起过。
+- **真实模型凭证下的端到端 loop**：容器一律用哑元凭证，只能证明"驱动起了第 1 轮并正确暂停"，不能证明多轮推进与 `loop_done` 收尾。
+- `dsh plugin allow-version` 的确切用法未查明（静默无输出且闸门未解除），本轮是靠放宽 `peerDependencies` 走通的。
+

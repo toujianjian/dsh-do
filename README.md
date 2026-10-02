@@ -238,6 +238,25 @@ dsh plugin --profile tui add <dsh-do 的 tarball 或包名>
 dsh --profile tui --dump-config   # 应看到唯一的 `id: do` 行与 `id: tui-runner` 并存
 ```
 
+### DSH 版本兼容
+
+下列 dsh / dsh-tui 组合都做过**真实 TTY** 验收（`/loop` 敲进去、状态栏 `◆ 循环` 段渲出来），可用 `test-docker/` 复现：
+
+| dsh | dsh-tui |
+| --- | --- |
+| 0.1.0-rc.8 | 0.1.1-rc.6 |
+| 0.1.5-rc.3 | 0.1.2-rc.31 |
+| 0.1.7-rc.2 | 0.1.2-rc.31 |
+| 0.2.0-rc.2 | 1.0.0-rc.2 |
+
+跨版本差异已在插件内处理：
+
+- **会话日志读取**：DSH 0.1.5-rc.3 移除了 `Session.events` getter，改为 `snapshotEvents()`（整段日志）与 `ownEvents()`（排除 fork 继承前缀）。`src/session-log.ts` 按能力探测并回退，一份构建同时服务新旧两代。
+- **peer 范围**：`^0.1.0-rc.6 || ^0.2.0-rc.1`。dsh 0.2.x 有版本闸门，范围不覆盖就会被**拒绝装载**（`skipping profile bundle "dsh-do"`），不是崩溃。
+- **TUI 状态栏补丁**：同时支持 `projectStatusPanel(...)` 的单行与跨行展开两种调用形状；形状再变时明确失败且不写文件。
+
+**Windows 黑窗**：上游 `dsh-subprocess-local` 从 0.1.5-rc.3 起才在 spawn 处带 `windowsHide`。停留在 0.1.0-rc.8 时子进程会闪黑窗，升级即消失——这一层不在本插件内。
+
 ## 开发与验证
 
 ```sh
