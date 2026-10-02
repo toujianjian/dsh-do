@@ -112,6 +112,18 @@ test('patcher is idempotent: a second run changes nothing', () => {
 	}
 })
 
+test('a leading flag is not mistaken for the target path', async () => {
+	const { dir, file, mod } = patchedFixture()
+	try {
+		await mod
+		const check = execFileSync(process.execPath, [patcher, '--check', file], { encoding: 'utf8' })
+		assert.match(check, /CHECK: patched/)
+		assert.doesNotMatch(check, /bundle not found/)
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 test('loop renderer survives the real projection shape that crashed the TUI', async () => {
 	const { dir, mod } = patchedFixture()
 	try {

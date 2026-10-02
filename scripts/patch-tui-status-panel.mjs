@@ -17,8 +17,12 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
-const target = process.argv[2] ?? 'C:\\Users\\Huawei\\.dsh\\profiles\\tui\\node_modules\\@huiliyi37\\dsh-tianshu-tui\\lib\\index.js'
-const checkOnly = process.argv.includes('--check')
+const DEFAULT_TARGET = 'C:\\Users\\Huawei\\.dsh\\profiles\\tui\\node_modules\\@huiliyi37\\dsh-tianshu-tui\\lib\\index.js'
+// Flags must be filtered out before picking the positional target, or
+// `patch-tui-status-panel.mjs --check` would look for a bundle named `--check`.
+const args = process.argv.slice(2)
+const checkOnly = args.includes('--check')
+const target = args.find((arg) => !arg.startsWith('--')) ?? DEFAULT_TARGET
 if (!existsSync(target)) {
 	console.error(`tui bundle not found: ${target}`)
 	process.exit(2)
