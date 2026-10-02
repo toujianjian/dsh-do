@@ -53,6 +53,12 @@ export declare const PI_AI_NS = "llm-pi-ai";
 /** The namespace recording which provider/model new agents use. */
 export declare const AGENT_DEFAULT_MODEL_NS = "agent-default-model";
 /**
+ * The namespace dsh-DO's own configuration is filed under on DSH 0.1.x, where a
+ * plugin registers a namespace. 0.2.x keys sections by profile entry id instead;
+ * use {@link resolveDoNamespace} rather than this constant to locate the section.
+ */
+export declare const DSH_DO_NS = "dsh-do";
+/**
  * Read one provider's retry policy out of a resolved settings section.
  *
  * Absent fields fall back to the Host's built-in defaults, so the page shows
@@ -100,6 +106,18 @@ export interface SettingsSectionView {
 }
 /** Index the served sections by namespace. */
 export declare function indexSections(sections: readonly SettingsSectionView[]): Map<string, SettingsSectionView>;
+/**
+ * Find the namespace dsh-DO's own loop configuration was served under.
+ *
+ * DSH 0.1.x files it under the registered namespace `dsh-do`; 0.2.x keys every
+ * section by its profile entry id instead, and that id belongs to the deployment
+ * rather than to this plugin. The section is therefore recognised by the fields
+ * it carries, so a renamed entry still resolves.
+ *
+ * @param sections - served sections indexed by namespace.
+ * @returns the namespace to read and write, or undefined when it was not served.
+ */
+export declare function resolveDoNamespace(sections: ReadonlyMap<string, SettingsSectionView>): string | undefined;
 /**
  * Discover every retry policy the deployment actually exposes.
  *

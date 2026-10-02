@@ -19,7 +19,7 @@
  * @module dsh-do/config-command
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { DSH_DO_NS } from './settings.js'
+import { DSH_DO_NS, isDoSection } from './settings.js'
 import { isTuiCommandRegistry, TUI_COMMANDS_SERVICE } from './tui.js'
 
 /** Command name; distinct from the TUI builtin `/config` so prefixes stay unambiguous. */
@@ -54,6 +54,47 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
 export interface SettingsAccess {
 	get(ns: string): unknown
 	mutate(ns: string, ops: readonly unknown[]): Promise<unknown>
+}
+
+/** The DSH 0.2.x settings service face: sections are keyed by profile entry id. */
+interface SettingsFormsFace {
+	describe(options?: { redactSecrets?: boolean }): ReadonlyArray<{ ns: string; value: unknown }>
+	mutate(ns: string, ops: readonly unknown[], expectedRevision?: number): Promise<unknown>
+}
+
+/** The namespace dsh-DO's section is actually filed under in this deployment. */
+function locateDoSection(forms: SettingsFormsFace, fallback: string): string {
+	for (const descriptor of forms.describe({ redactSecrets: true })) {
+		if (isDoSection(descriptor.ns, descriptor.value)) return descriptor.ns
+	}
+	return fallback
+}
+
+/**
+ * Present either generation of the settings service as one access face.
+ *
+ * DSH 0.1.x exposes `get(ns)` over namespaces the plugin registered itself. 0.2.x
+ * dropped both the registration and `get`, deriving a section from the plugin
+ * entry's own Config and keying it by profile entry id; `describe` and `mutate`
+ * are what remain. The namespace is resolved per call because a live edit can
+ * change which entry carries the section.
+ *
+ * @param service - the mounted settings service, if any.
+ * @returns the access face, or undefined when neither shape is available.
+ */
+export function adaptSettingsAccess(service: unknown): SettingsAccess | undefined {
+	const record = service as { get?: unknown; mutate?: unknown; describe?: unknown } | undefined
+	if (record === undefined || record === null || typeof record.mutate !== 'function') return undefined
+	if (typeof record.get === 'function') return service as SettingsAccess
+	if (typeof record.describe !== 'function') return undefined
+	const forms = service as SettingsFormsFace
+	return {
+		get: (ns) => {
+			const wanted = locateDoSection(forms, ns)
+			return forms.describe({ redactSecrets: true }).find((descriptor) => descriptor.ns === wanted)?.value
+		},
+		mutate: (ns, ops) => forms.mutate(locateDoSection(forms, ns), ops),
+	}
 }
 
 /** Parsed command. */
@@ -220,10 +261,7 @@ function renderError(error: unknown): string {
  * @param ctx - the plugin context.
  */
 export function installConfigCommand(ctx: Context): void {
-	const settingsOf = (): SettingsAccess | undefined => {
-		const service = ctx.get('settings') as Partial<SettingsAccess> | undefined
-		return service !== undefined && typeof service.get === 'function' && typeof service.mutate === 'function' ? (service as SettingsAccess) : undefined
-	}
+	const settingsOf = (): SettingsAccess | undefined => adaptSettingsAccess(ctx.get('settings'))
 	const fileHint = (): string => {
 		const home = process.env.DSH_HOME ?? `${process.env.USERPROFILE ?? process.env.HOME ?? '~'}/.dsh`
 		return `${home.replace(/[\\/]+$/, '')}${process.platform === 'win32' ? '\\' : '/'}settings.yaml`

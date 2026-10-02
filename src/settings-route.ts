@@ -18,6 +18,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readJsonBody } from './ai-install.js'
+import { isDoSection } from './settings.js'
 
 /** Route the browser half reads and writes settings through. */
 export const SETTINGS_PATH = '/dsh-do/settings'
@@ -133,7 +134,7 @@ export function readSettingsView(settings: SettingsFace): SettingsSectionView[] 
 	const wanted = new Set<string>(READ_NAMESPACES)
 	const views: SettingsSectionView[] = []
 	for (const descriptor of settings.describe({ redactSecrets: true })) {
-		if (!wanted.has(descriptor.ns)) continue
+		if (!wanted.has(descriptor.ns) && !isDoSection(descriptor.ns, descriptor.value)) continue
 		views.push({
 			ns: descriptor.ns,
 			value: descriptor.value,

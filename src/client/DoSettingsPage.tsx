@@ -24,6 +24,7 @@ import {
 	readActiveModel,
 	readLoopDraft,
 	readRetryDraft,
+	resolveDoNamespace,
 	resolveRetryTargets,
 	selectRetryTarget,
 	validateLoopDraft,
@@ -36,9 +37,6 @@ import {
 
 /** The bridge route this page reads and writes. */
 const SETTINGS_PATH = '/dsh-do/settings'
-
-/** The plugin's own settings namespace. */
-const DSH_DO_NS = 'dsh-do'
 
 /** Stable identity of one target across namespaces. */
 function targetKey(target: RetryTarget): string {
@@ -142,6 +140,8 @@ export function DoSettingsPage(props: SettingsSectionOwnerProps): ReactElement {
 	const [retry, setRetry] = useState<RetryDraft | undefined>(undefined)
 	/** The section revisions the drafts were read at, for write fencing. */
 	const [revisions, setRevisions] = useState<{ loop?: number; retry?: number }>({})
+	/** Namespace dsh-DO's own section was served under, resolved per response. */
+	const [doNamespace, setDoNamespace] = useState<string | undefined>(undefined)
 
 	const byNs = useMemo(() => indexSections(sections ?? []), [sections])
 	const targets = useMemo(() => resolveRetryTargets(byNs), [byNs])
@@ -158,10 +158,15 @@ export function DoSettingsPage(props: SettingsSectionOwnerProps): ReactElement {
 	/** Adopt a Host response: replace the sections and re-seed both forms. */
 	const adopt = useCallback((next: readonly SettingsSectionView[], selected: RetryTarget | undefined) => {
 		const map = indexSections(next)
+		// The Host files dsh-DO's section under a namespace this build cannot know
+		// in advance (the registered one on 0.1.x, the profile entry id on 0.2.x),
+		// so it is resolved from the served sections on every response.
+		const doNs = resolveDoNamespace(map)
 		setSections(next)
-		setLoop(readLoopDraft(map.get(DSH_DO_NS)?.value))
+		setDoNamespace(doNs)
+		setLoop(readLoopDraft(doNs === undefined ? undefined : map.get(doNs)?.value))
 		setRevisions({
-			loop: map.get(DSH_DO_NS)?.revision,
+			loop: doNs === undefined ? undefined : map.get(doNs)?.revision,
 			...(selected === undefined ? {} : { retry: map.get(selected.namespace)?.revision }),
 		})
 		setRetry(selected === undefined ? undefined : readRetryDraft(map.get(selected.namespace)?.value, selected.path))
@@ -209,12 +214,12 @@ export function DoSettingsPage(props: SettingsSectionOwnerProps): ReactElement {
 	)
 
 	const save = useCallback(async () => {
-		if (loop === undefined || problem !== undefined) return
+		if (loop === undefined || problem !== undefined || doNamespace === undefined) return
 		setBusy(true)
 		setSaveError(undefined)
 		setSaved(false)
 		try {
-			await write(DSH_DO_NS, [{ op: 'set', path: [], value: buildLoopSectionValue(loop) }], revisions.loop)
+			await write(doNamespace, [{ op: 'set', path: [], value: buildLoopSectionValue(loop) }], revisions.loop)
 			if (retry !== undefined && target !== undefined) await write(target.namespace, buildRetrySaveOps(target, retry), revisions.retry)
 			setSaved(true)
 		} catch (error) {
@@ -222,7 +227,7 @@ export function DoSettingsPage(props: SettingsSectionOwnerProps): ReactElement {
 		} finally {
 			setBusy(false)
 		}
-	}, [loop, retry, target, problem, revisions, write])
+	}, [loop, retry, target, problem, revisions, write, doNamespace])
 
 	const resetRetry = useCallback(async () => {
 		if (target === undefined) return

@@ -24,4 +24,4 @@ export type { AutoContinueSettings, DoSettings, LoopDetectionSettings, ModelFall
 /** Derive the checkpoint root from configuration or the DSH home directory. */
 export declare function resolveCheckpointDir(checkpointDir: string): string;
 /** Apply the plugin. */
-export declare function apply(ctx: Context, config: DoSettings): void;
+export declare function apply(ctx: Context, rawConfig: DoSettings): void;

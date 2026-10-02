@@ -13,6 +13,31 @@ import z from '@deepseek-ai/schemastery';
 /** Namespace of dsh-DO's user-owned settings. */
 export declare const DSH_DO_NS: import("@deepseek-ai/dsh-settings").SettingsNamespace;
 /**
+ * Whether a served settings section carries dsh-DO's own configuration.
+ *
+ * DSH 0.1.x files it under the registered namespace `dsh-do`, but 0.2.x keys
+ * every section by its profile entry id instead — and that id belongs to the
+ * deployment, not to this plugin, so the section is recognised by the fields it
+ * carries rather than by the name it is filed under.
+ *
+ * @param ns - the namespace the section was served under.
+ * @param value - the section's resolved value.
+ * @returns whether this is dsh-DO's loop configuration.
+ */
+export declare function isDoSection(ns: string, value: unknown): boolean;
+/**
+ * Copy a resolved config, replacing every live reference with the value it holds
+ * right now.
+ *
+ * Callers must read through this on every access and never cache the result:
+ * that is what makes a committed settings change take effect without a restart,
+ * because the reference is updated in place while the surrounding object stays.
+ *
+ * @param value - a resolved config node.
+ * @returns the same shape with every live reference resolved.
+ */
+export declare function plainSettings<T>(value: T): T;
+/**
  * Interruption policy for a model that repeats one tool call without making
  * progress. The detector stops the turn, optionally compacts the history, and
  * re-sends the request so the model continues from a smaller, loop-free state.
@@ -72,6 +97,11 @@ export interface DoSettings {
 /**
  * Settings schema. This is also the plugin's composition `Config`: the entry in
  * `cordis.patch.yml` is the `base` layer of the same namespace.
+ *
+ * The object itself is marked volatile — every field is read live through
+ * {@link plainSettings}, so all of them may be edited without a remount. That
+ * marking is also what makes the section appear at all: a settings service that
+ * projects only volatile fields (DSH 0.2.x) hides an entry that declares none.
  */
 export declare const Config: z<Schemastery.ObjectS<{
     defaultMaxRounds: z<number, number>;

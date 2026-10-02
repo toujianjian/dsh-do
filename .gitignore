@@ -1,6 +1,8 @@
 node_modules/
 *.tsbuildinfo
 *.tgz
+# 提交信息临时文件（PowerShell 会吃掉多行 -m，故写文件再 git commit -F）
+.git-commit-msg.txt
 
 # 本工具的运行期状态，不进仓库
 .dsh-meow/

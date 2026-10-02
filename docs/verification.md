@@ -324,13 +324,21 @@ Docker 环境：`test-docker/`，Debian + Node 24 + pnpm + 真实 PTY（`script`
 | 0.1.7-rc.2 | 0.1.2-rc.31 | 是 | 正常 | 轮次 + 暂停原因 | 启动期另有 `typert-loader … has no create() factory`，来自 TUI 与 DSH 自身错配，与 dsh-do 无关 |
 | 0.2.0-rc.2 | 1.0.0-rc.2 | 是（放宽 peer 后） | `Loop restarted` | 轮次 + 暂停原因 | 未放宽前被闸门拒绝 |
 
+**Web 组合（`dsh --profile <p>`，无 TUI）**
+
+| dsh | 客户端产物 | `/dsh-do/settings` 读 | 备注 |
+| --- | --- | --- | --- |
+| 0.1.0-rc.8 | `GET /plugins/dsh-do/client.js` → 200 | 四段含 `dsh-do` | 本机在用版本；本轮回归确认未受影响 |
+| 0.2.0-rc.2 | `GET /plugins/??dsh-do/client.js&rev=…` → 200 / 64227 字节 | 四段含 `do` | 裸路径 404 属平台换形状；写入受平台缺陷阻塞 |
+
 四个组合的启动期错误里**没有一条**来自 dsh-do。0.1.5-rc.3 与 0.2.0-rc.2 上循环还实际推进到「↻ 轮次 1/20」——容器用的是哑元凭证，第 1 轮必然因模型调用失败而暂停，这恰好证明**驱动被唤醒并真的跑了第 1 轮**，且暂停原因 `agent-error · the agent reported an error while the loop was running` 正确显示在状态栏上。
 
 ### 复测
 
 - `npm run typecheck`：Host 与 Client 双 `tsc --noEmit` 干净。
-- `npm test`（完整构建 + 真实 Loader）：**198 用例 / 198 通过 / 0 失败 / 0 跳过**（基线 189，本轮 +9：`test/session-log.test.mjs` 7 个钉住跨版本读取与"无日志不抛错"，`test/tui-patch.test.mjs` +2 钉住新调用形状与"形状不认识就明确失败且不写文件"）。
-- 本轮 Host 构建哈希：`lib/index.js` = `EF1276525D7A79EF6F98FD2F041A749D8FCE40BC967C93FE7DFA32836303B1EF`（四个容器组合安装副本的哈希都与之一致）；`lib/types/session-log.js` = `33CD73B39136ECB077AFF6B9E84EF4280087F37C55E2AE6A778B60BD9BF6B728`。
+- `npm test`（完整构建 + 真实 Loader）：**207 用例 / 207 通过 / 0 失败 / 0 跳过**（上一轮 198，本轮 +9：新增 `test/dsh-020-compat.test.mjs`，钉住 `plainSettings` 的活引用解包与"每次读都重解包"、`isDoSection` 按字段识别、`installDoSettings` 在无 `register` 的服务上不抛错且仍跟随活值、`adaptSettingsAccess` 两代形状、`resolveDoNamespace`、以及 `Config` 的特性探测）。
+- 本轮 Host 构建哈希：`lib/index.js` = `569AA7F50C0CC3FD…`（122474 字节；容器 web020 安装副本哈希与之一致）；`lib/types/session-log.js` = `33CD73B39136ECB077AFF6B9E84EF4280087F37C55E2AE6A778B60BD9BF6B728`。
+- 上一轮（TUI 多版本）的 Host 构建哈希为 `EF1276525D7A79EF6F98FD2F041A749D8FCE40BC967C93FE7DFA32836303B1EF`。
 
 ### 黑窗补丁：已撤销，且上游已自行修好
 
@@ -344,9 +352,48 @@ Docker 环境：`test-docker/`，Debian + Node 24 + pnpm + 真实 PTY（`script`
 - **`cordis-plugin-hmr` 钉子只对 rc.8 需要**：rc.8 的 `dsh-app-boot` 调 `hmr.registerConfig`，而全新安装解析到的 1.0.19 已删除该 API（本机在用的是 1.0.17）。0.1.5-rc.3 起 `dsh-base` 自己精确依赖 1.0.17，hmr 甚至不在依赖树里，故 `matrix-version.sh` 只在 `0.1.0-rc.8` 时注入该 override。
 - PowerShell 里 `docker exec … bash -c '<多语句>'` 会返回空输出或截断（大输出尤其），须改为"写 `.sh` → `docker cp` → 执行 → 落盘 → 再 `docker cp` 出来读"。
 
+### Web 半在 0.2.0-rc.2 上的适配（本轮）
+
+上表四个组合都是 TUI，Web 半从未在 0.2.x 上起过。本轮把 Web 组合补上，并修掉它暴露的真实缺口。
+
+**4）`@deepseek-ai/dsh-settings` 在 0.2.x 被重新设计，dsh-do 的设置段整个不出现**
+
+0.2.0-rc.2 的 `dsh-settings` 导出只剩 `SettingsConflictError, SettingsForms, default, redactSecrets`——`installSettingsSection`、`settingsNamespace`、`deepEqualJson`、`SettingsProvider` 以及 `register(ns, schema, options)` **全部移除**。段不再由插件注册，而是由**插件条目自己的 `Config`** 派生，并以 **profile 条目 id** 为键（`describe()` 的注释原文：*Forms keyed by unique profile entry ids*）。
+
+但仅此还不够：`describe()` 里有
+
+```js
+const form = volatileForm(schema)
+if (form === undefined) return []
+```
+
+而 `volatileForm()` **只保留被标了 `.volatile()` 的字段**（*Select fields whose nearest volatile ancestor makes them editable without remounting*）。dsh-do 的 `Config` 一个标记都没有，于是整段被跳过——实测 `/dsh-do/settings` 只回 `agent-default-model / llm-pi-ai / llm-deepseek` **三个**段，`dsh-do` 缺席（同机 0.1.0-rc.8 上则是四个，含 `dsh-do`）。
+
+**踩到的第二个坑**：`.volatile()` 是较晚的 schemastery 才有的方法。本机在用的 schemastery 是 **3.18.1**（本机 dsh 0.1.0-rc.8 profile 与仓库 devDependency 都是它），**运行时根本没有这个方法**，`typeof b.volatile === 'undefined'`、调用即 `TypeError`；容器 profile 解析到 3.18.4 才有。无条件调用会让插件在用户本机**直接装载失败**。故加了特性探测 `volatile()`，只在方法存在时套用；标记在根节点上一次即可（根 `meta.volatile` 为真时 `volatileForm` 直接返回整份 schema）。
+
+**第三个坑**：`.volatile()` 的**值**不是原值，而是 `Object.freeze({ get, [Symbol.for("cosmokit.volatile.write")] })` 这样的活引用（这也正是"不重挂载即可生效"的实现方式：引用被原地更新）。平台自己的 `plainConfig()` 就是靠 `isVolatile()` 解包。dsh-do 直接读 `config.persist` 会拿到一个恒真的对象。故新增 `plainSettings()`，**每次访问都重新解包、绝不缓存**——缓存会让"活"变回"死"。用 `Symbol.for(...)` 判定，与平台同协议、跨副本安全、零新依赖。
+
+**第四个坑**：0.2.x 的段键是 profile 条目 id（本部署为 `do`），而该 id 属于部署方、插件无从预知。故段一律**按字段形状识别**（含 `defaultMaxRounds` + `loopDetection` + `autoContinue`），`dsh-do` 这个注册名只作 0.1.x 的快路径。Host 侧（`settings-route.ts` 的 `readSettingsView`）与 Client 侧（新增 `resolveDoNamespace`）都如此，设置页不再硬编码 `dsh-do`。
+
+**第五个坑**：`/do-config` 原本以 `typeof service.get === 'function'` 守卫，0.2.x 的 `SettingsForms` 没有 `get`，于是命令会**静默降级**成"当前组合没有挂载 settings 服务"这句误导性提示。新增 `adaptSettingsAccess()`，把两代服务统一成同一个访问面（0.1.x 直用；0.2.x 以 `describe()` 读、`mutate()` 写并顺带解析条目 id）。
+
+**实测结果（容器 profile `web020` = dsh 0.2.0-rc.2 + dsh-web-app 0.2.0-rc.2）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| profile 接纳 `id: do` | 是（放宽 peer 后），`--dump-config` 1266 行无 skipping/incompatible |
+| 启动期错误 | 无 |
+| 壳 HTML 里 dsh-do 的客户端模块清单 | `{"id":"dsh-do","url":"plugins/??dsh-do/client.js&rev=…","inject":["@deepseek-ai/dsh-client-runtime","@deepseek-ai/dsh-client-ui-primitives"]}` |
+| 客户端产物 | `GET /plugins/??dsh-do/client.js&rev=…` → **200 / 64227 字节**，含 `断连重试策略`、`模型循环检测`、`DoSettingsPage`、`settings.section`、`resolveDoNamespace` |
+| `GET /dsh-do/settings` | **200**，段为 `agent-default-model, llm-pi-ai, llm-deepseek, `**`do`**，且 `do` 段带**完整**六个顶层字段（嵌套对象齐全） |
+| `POST /dsh-do/settings` | **500 `dsh: profile reload requires the root Include entry`**（平台侧，见下） |
+
+注意 0.2.x 的客户端产物**不再**挂在裸路径上：`GET /plugins/dsh-do/client.js` 返回 404，真实地址是组合 URL `plugins/??dsh-do/client.js&rev=…`（`@deepseek-ai/dsh-client-modules` 的组合模块系统）。**这不是 dsh-do 的缺陷**，是平台换了 URL 形状；0.1.x 上裸路径仍可用。
+
 ### 仍未声称完成
 
-- **Web 端多版本适配未验**：本轮四个组合都是 TUI。Web 半（Client slot、`/dsh-do/settings` 路由、设置页交互）只在 0.1.0-rc.8 上验过，0.1.5-rc.3 / 0.2.0-rc.2 下的 Web 组合尚未起过。
+- **0.2.0 的设置「保存」走不通，但根因在平台**：`POST /dsh-do/settings` 返回 500 `dsh: profile reload requires the root Include entry`。**对照实验证明与 dsh-do 无关**——写平台自带的 `agent-default-model` 段报**完全相同**的错。该错来自 `@deepseek-ai/dsh-app-boot` 的 `reconcileProfilePatches()`：它要求启动时 `mountRootInclude()` 已把 root Include entry 注册进 `bootstrapIncludes` WeakMap，而 0.2.0-rc.2 上该注册未发生。读路径完全正常（见下），写路径是 0.2.x 从「写 settings.yaml」改成「改 profile patch + 重载 profile」后新引入的，属平台侧问题，dsh-do 只如实透传平台原文并以 500 归类。**待上游修复后需重验保存。**
 - **真实模型凭证下的端到端 loop**：容器一律用哑元凭证，只能证明"驱动起了第 1 轮并正确暂停"，不能证明多轮推进与 `loop_done` 收尾。
 - `dsh plugin allow-version` 的确切用法未查明（静默无输出且闸门未解除），本轮是靠放宽 `peerDependencies` 走通的。
+- **Web 半在 0.1.5-rc.3 上仍未起过**：本轮补上了 0.2.0-rc.2 的 Web 组合，0.1.5-rc.3 的 Web 组合仍只有 TUI 证据。
 

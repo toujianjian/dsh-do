@@ -35,6 +35,19 @@ export interface SettingsAccess {
     get(ns: string): unknown;
     mutate(ns: string, ops: readonly unknown[]): Promise<unknown>;
 }
+/**
+ * Present either generation of the settings service as one access face.
+ *
+ * DSH 0.1.x exposes `get(ns)` over namespaces the plugin registered itself. 0.2.x
+ * dropped both the registration and `get`, deriving a section from the plugin
+ * entry's own Config and keying it by profile entry id; `describe` and `mutate`
+ * are what remain. The namespace is resolved per call because a live edit can
+ * change which entry carries the section.
+ *
+ * @param service - the mounted settings service, if any.
+ * @returns the access face, or undefined when neither shape is available.
+ */
+export declare function adaptSettingsAccess(service: unknown): SettingsAccess | undefined;
 /** Parsed command. */
 export type ConfigCommand = {
     readonly kind: 'list';

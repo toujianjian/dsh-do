@@ -24,7 +24,7 @@ import { installLoopStatus } from './loop-status.js'
 import { LoopController } from './controller.js'
 import { installLoopDriver } from './driver.js'
 import { installLoopDetection } from './loop-detect.js'
-import { installDoSettings, type DoSettings } from './settings.js'
+import { installDoSettings, plainSettings, type DoSettings } from './settings.js'
 import { installSettingsRoute } from './settings-route.js'
 import { registerLoopTools } from './tools.js'
 import { installTuiCommand } from './tui.js'
@@ -51,7 +51,10 @@ export function resolveCheckpointDir(checkpointDir: string): string {
 const LOOP_GUIDANCE = `Use loop tools for a Claude Code-style autonomous loop: when a direct human request is a long-running objective that should keep iterating across turns, call loop_start with the objective and an optional round budget; the loop then auto-continues until the model calls loop_done, the budget is exhausted, or the loop is cancelled. A cancelled round disarms the loop until loop_start re-arms it. The human can drive the same loop with the /loop command. Prefer goal tools for goal-scoped continuation and one mechanism per task.`
 
 /** Apply the plugin. */
-export function apply(ctx: Context, config: DoSettings): void {
+export function apply(ctx: Context, rawConfig: DoSettings): void {
+	// Read the plain values once for the wiring decisions below; the live config
+	// object is handed to `installDoSettings` so later edits stay visible.
+	const config = plainSettings(rawConfig)
 	const storeFor = (settings: DoSettings): LoopStore | undefined =>
 		settings.persist
 			? new LoopStore(resolveCheckpointDir(settings.checkpointDir), { onError: (message) => ctx.logger.warn(message) })
@@ -63,7 +66,7 @@ export function apply(ctx: Context, config: DoSettings): void {
 	})
 	// Settings are read live, so a committed `dsh-do:` section changes the loop
 	// budget, the checkpoint target, and the detection policy without a restart.
-	const settings = installDoSettings(ctx, config, (next) => {
+	const settings = installDoSettings(ctx, rawConfig, (next) => {
 		const wantedDir = next.persist ? resolveCheckpointDir(next.checkpointDir) : undefined
 		if (wantedDir === storeDir) return
 		storeDir = wantedDir
