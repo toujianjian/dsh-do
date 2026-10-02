@@ -101,7 +101,7 @@
 
 - Client bundle 走官方 tsdown 链路：`window.__ModuleLoader__.load` 包装、CSS Modules 内联注入、跨包纯度门、sourcemap。
 - Host 路由（AI 安装）用 `ctx.inject` 惰性挂载（不抢跑兄弟 provider），请求体有大小上限、统一 JSON 错误与 `no-store` 缓存策略。
-- 纯函数可测试：loop 状态机、`/loop` 命令语法与渲染、模型循环检测与判定、检查点往返/原子性、设置写入请求校验与重试策略读写，加上驱动竞态、节奏等待、安装 HTTP、Client 状态与真实 Cordis 注册/卸载（`node --test` 覆盖 120 个用例；设置 `DSH_COMPOSITION_RUNTIME_MANIFEST` 后含真实 Loader 用例也一并实跑，否则该 1 项跳过）。
+- 纯函数可测试：loop 状态机、`/loop` 命令语法与渲染、模型循环检测与判定、检查点往返/原子性、设置写入请求校验与重试策略读写，加上驱动竞态、节奏等待、安装 HTTP、Client 状态与真实 Cordis 注册/卸载（`node --test` 覆盖 188 个用例；设置 `DSH_COMPOSITION_RUNTIME_MANIFEST` 后含真实 Loader 用例也一并实跑，否则该项跳过）。
 
 ## 工作原理
 
@@ -251,6 +251,8 @@ pnpm watch          # tsdown --watch（client HMR 构建）
 验证分层：类型检查与构建；纯函数/文件/驱动/HTTP 测试；真实 Cordis 注册与卸载；临时 DSH_HOME 的 tarball 安装与 `--dump-config`（注册行 id 为 `do`，包名 `dsh-do`）。配置打印不等于完整运行。
 
 可选真实 Loader 测试：设置 `DSH_COMPOSITION_RUNTIME_MANIFEST` 为本机已安装 DSH 的 `package.json` 绝对路径，再运行 `pnpm test`；未设置时该测试明确跳过。该测试不启动 Web 或调用模型，浏览器与真实安装会话仍须单独验收。
+
+TUI 的 `◆ 循环` 段由 `scripts/patch-tui-status-panel.mjs` 打到已安装的 `dsh-tianshu-tui` 上（幂等，`--check` 只校验，已打旧版可就地升级）。**该补丁落在 `node_modules` 内，TUI 包升级会丢失，届时重跑脚本即可。** 数据来源是 `loops` 服务（`ctx.reflect.get('loops', false)`），不是 `loop` 投影——投影是对会话日志的纯 fold，只含 `{ loopId, roundsStarted, lastRoundAt }`，没有目标/暂停原因；早先按投影取字段会喂 `undefined` 给截断器并在渲染定时器里抛错，**直接掀掉整个 TUI 进程**。`test/tui-patch.test.mjs` 用投影的真实形状钉住了这个崩法。
 
 **端到端 loop 验证**（需要模型凭证）：
 

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# 容器网络诊断：确认 GitHub 是否可达，决定用哪种方式装 dsh-do。
+echo "=== DNS github.com ==="
+getent hosts github.com || echo "no A record for github.com"
+echo "=== DNS registry.npmjs.org ==="
+getent hosts registry.npmjs.org || echo "no A record for registry.npmjs.org"
+echo "=== https registry.npmjs.org ==="
+curl -sS -o /dev/null -w 'npm=%{http_code}\n' --max-time 15 https://registry.npmjs.org/ 2>&1 || echo "npm curl failed"
+echo "=== https github.com ==="
+curl -sS -o /dev/null -w 'gh=%{http_code}\n' --max-time 15 https://github.com/ 2>&1 || echo "gh curl failed"
+echo "=== https codeload.github.com ==="
+curl -sS -o /dev/null -w 'codeload=%{http_code}\n' --max-time 15 https://codeload.github.com/ 2>&1 || echo "codeload curl failed"
+echo "=== env proxies ==="
+env | grep -i -E 'proxy|no_proxy' || echo "(no proxy env)"
+echo "=== done ==="

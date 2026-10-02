@@ -129,3 +129,75 @@ TUI 的 `/status` 面板写死在 goal/todos/plan 三个单元上，注册新 ke
 - TUI 真实 TTY 里 `/do-config` 的输出与修改。
 - 真实 429 下的切换（需要确实会限流的提供方）。
 - Web 设置页两张新卡片的显示与保存。
+
+---
+
+# Docker 自测（2026-10-02）：TUI 真实 TTY 验收 + 一个真实崩溃的修复
+
+用户要求"这台电脑有 docker，你自己搭建环境自己测"，于是把先前挂在"待人工验收"里的 TUI 两项搬进容器实跑。
+
+## 环境复刻
+
+容器 `dsh-env`（`node:24`），刻意**对齐本机版本而非 npm latest**：`@deepseek-ai/dsh@0.1.0-rc.8`、`@huiliyi37/dsh-tianshu-tui@0.1.1-rc.6`、pnpm `11.6.0`，profile 落 `/root/.dsh/profiles/tui`，`pnpm-workspace.yaml` 逐字复刻本机的 `nodeLinker: hoisted` + `minimumReleaseAgeExclude`。`dsh-do` 用文档里的真实路径安装：`dsh plugin --profile tui add github:toujianjian/dsh-do`。
+
+**装出来的 `lib/index.js` sha256 = `7082BFB3ECF67CF2`，与本机仓库构建、两个 profile 的部署副本逐字节一致**；`git ls-remote` 取回的也是推送的 `1b980aa2`。这条同时证明了"推到 GitHub 的产物 == 本机部署的产物"。
+
+### 复刻过程中暴露的三个环境事实（都不是本插件的缺陷）
+
+| 现象 | 根因 | 处置 |
+| --- | --- | --- |
+| 容器里 `github.com` 连不上 | 宿主 hosts 把 `github.com` 指到 `127.0.0.1`，Docker 会照抄这些条目，而容器里 `127.0.0.1` 是容器自身（`codeload.github.com` 未屏蔽，正常） | 容器内改回真实 IP |
+| `dsh plugin add` 非 0 退出且 **`dsh.profile.bundles` 仍是空的** | 新版 pnpm 的 `ERR_PNPM_IGNORED_BUILDS`（node-pty 等构建脚本被默认拦截）；`dsh plugin` 只在成功后写 bundles → 依赖装进去了但插件不挂载 | 补 `allowBuilds` |
+| 全新 profile 启动即 `hmr.registerConfig is not a function` | pnpm 全新解析出 `@deepseek-ai/cordis-plugin-hmr@1.0.19`，**该版本已无 `registerConfig`**，而 dsh 0.1.0-rc.8 的 `dsh-app-boot` 依赖它；本机是 `1.0.17`（有） | `overrides` 钉回 `1.0.17` |
+
+> 附带发现：`@huiliyi37/dsh-tianshu-tui` **会自我升级到 npm latest**（"插件已更新到 1.0.0-rc.2，请重启 dsh 后生效"这句话就在它自己的 bundle 里），而 `1.0.0-rc.2` 与 dsh 0.1.0-rc.8 不兼容，升完 profile 直接起不来。测试期间用 `overrides` 钉住 + 断网跑。
+
+## 抓到的真实缺陷：循环一跑，`/status` 就把 TUI 打崩
+
+**复现**：起任意循环（`/loop <目标>`）后敲 `/status`。
+
+```
+WriteBatcher flush error: TypeError: text is not iterable
+    at truncateByWidth$4   (for (const ch of text))
+    at projectLoopSection
+    at projectStatusPanel
+    at TuiApp.renderLive  →  Timeout._onTimeout
+Node.js v24.21.0        ← 整个 TUI 进程退出，不可恢复
+```
+
+**根因**：补丁第一版把渲染快照的 `loop` 当成 `LoopStatusView` 用（取 `objective`/`phase`/`armed`/`maxRounds`），但它拿到的是 **`loop` 投影 cell 的值**，而投影是**对会话日志的纯 fold**，`view: (s) => s` 只返回 `{ loopId, roundsStarted, lastRoundAt }`。于是 `loop.objective === undefined` → `truncateByWidth(undefined, w)` → `for (const ch of undefined)` 抛错；因为调用点在**渲染定时器**里，异常直接掀掉整个进程。
+
+本仓库自己的文档第 55 行早就写明投影只有那三个字段、活字段要走 `loops` 服务——**是补丁选错了数据源**。
+
+**修复**（`scripts/patch-tui-status-panel.mjs`）：
+
+1. **数据源改对**：快照取 `this.ctx.reflect.get("loops", false)?.list?.().get(String(this.activeSessionId)) ?? null`，与 TUI 读 `tasks`/`subagents`/`settings` 完全同款；拿到的是含 `objective/phase/armed/maxRounds/pausedReason` 的服务视图。
+2. **渲染器全部按可选字段处理**：`asText()` 兜底、`Number.isFinite` 校验，缺字段降级成 `(无目标)` / `?` / `0`，**渲染期绝不再抛错**。
+3. **修掉补丁自身的重复注入隐患**：`to` 文本包含 `from` 锚点，旧版按 `from` 判存在性，**在同一份文件上再跑一次就会重复注入一份 renderer**（语法直接坏）。现改为**先判 `to`**，并新增两条 upgrade 补丁，让已打旧补丁的安装能就地升级而不是重装。
+
+**回归测试** `test/tui-patch.test.mjs`（6 条）：拿一份带四个真实锚点的最小 fixture 打补丁后真的执行注入代码——**用投影真实形状 `{loopId, roundsStarted, lastRoundAt}` 调 `projectLoopSection` 必须不抛**，另外覆盖空对象/脏类型、`--check` 判定、幂等（第二次跑 `no change needed` 且字节不变）、以及快照确实走 `loops` 服务。
+
+## 复测结果（容器内真实 pty）
+
+`/do-config` —— **通过**。slash 面板显示 `命令: /do-config [<路径> [<值>] | reset <路径> | file]`，执行后 14 个字段全部渲染，含新增的 `autoContinue.*`（3 项）与 `modelFallback.*`（3 项）。
+
+`/status` 的 `◆ 循环` 段 —— **通过**，且进程不再退出：
+
+```
+◆ 循环 · 已暂停
+验证状态栏循环段
+↻ 轮次 1/20
+⏸ agent-error · the agent reported an error while the loop was running
+```
+
+四行齐了：状态、目标、轮次、**暂停原因**（正是这个功能"循环停了不再无声"的立意）。行内 `已暂停 / agent-error` 由容器无 API key 导致，属预期。
+
+- 新增 6 条用例后，本机全量 `npm test` 见下节复测记录。
+- 本机 TUI 与容器 TUI 已同步升级到新补丁，两处都验证过：无重复注入、`node --check` 通过、`--check` 报 `CHECK: patched`、再跑报 `no change needed`。
+
+## 至此仍未人工验收的项
+
+- Web 设置页（两张新卡片的显示与保存/重置/409）。
+- 真实 429 下的模型切换（需要确实会限流的提供方；容器内可用 mock provider 造）。
+- 浏览器侧的循环状态展示。
+
