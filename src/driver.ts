@@ -12,11 +12,17 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { LoopController } from './controller.js'
-import { effectiveRounds, isLoopSource, type LoopMessageSource, type LoopState } from './loop.js'
-import { renderLoopRoundPrompt } from './prompt.js'
+import { effectiveRounds, isLoopSource, MAX_TIMER_DELAY_MS, type LoopMessageSource, type LoopPauseReason, type LoopState } from './loop.js'
+import { renderLoopPauseNotice, renderLoopRoundPrompt } from './prompt.js'
+import { decideAutoContinue, describeAutoContinueStop, renderAutoContinuePrompt } from './auto-continue.js'
+import type { AutoContinueSettings } from './settings.js'
+
+/** Source stamped on the driver's own notices, matching the detector's. */
+const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-do' } as const
 
 /** One queued/claimed/admitted round reservation owned by the driver. */
 interface Attempt {
@@ -37,6 +43,18 @@ interface PerAgentState {
 	requested: boolean
 	run: Promise<void> | undefined
 	stopping: boolean
+	/** Epoch ms a round was last queued, or undefined before the first one. */
+	lastRoundAt: number | undefined
+	/** Pending interval wakeup, cleared whenever pacing is re-evaluated. */
+	paceTimer: ReturnType<typeof setTimeout> | undefined
+	/** Output-limit continuations queued since the last turn that ended normally. */
+	continueStreak: number
+}
+
+/** Optional driver behaviour read live from settings. */
+export interface LoopDriverOptions {
+	/** Output-limit auto-continue policy; absent keeps the stop-at-max-tokens contract. */
+	readonly autoContinue?: () => AutoContinueSettings
 }
 
 function renderThrown(value: unknown): string {
@@ -49,13 +67,28 @@ function sameQueued(content: ContentBlock[], source: LoopMessageSource, attempt:
 }
 
 /**
+ * Handle exposing the driver's external wakeup to its owner.
+ */
+export interface LoopDriverHandle {
+	/**
+	 * Wake the driver for one session's live agent after an external loop change
+	 * (a loop was started, replaced, edited, or resumed). Idempotent and safe to
+	 * call when no agent or loop exists: the driven pass re-reads live state and
+	 * declines to queue when the loop is not armed and active.
+	 * @param sessionId - session whose agent should be re-examined.
+	 */
+	nudge(sessionId: string): void
+}
+
+/**
  * Install the round-continuation driver for one plugin context. The driver
  * effect owns its teardown (joins every in-flight run, disarms every loop).
  * When `restore` is supplied, listeners are installed only after it settles,
  * and agents already idle at that point are nudged so a restored armed loop
  * resumes without waiting for the next status transition.
+ * @returns the external wakeup handle the controller's change sink drives.
  */
-export function installLoopDriver(ctx: Context, controller: LoopController, restore?: Promise<void>): void {
+export function installLoopDriver(ctx: Context, controller: LoopController, restore?: Promise<void>, options: LoopDriverOptions = {}): LoopDriverHandle {
 	const states = new Map<Agent, PerAgentState>()
 
 	function stateFor(agent: Agent): PerAgentState {
@@ -68,6 +101,9 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 				requested: false,
 				run: undefined,
 				stopping: false,
+				lastRoundAt: undefined,
+				paceTimer: undefined,
+				continueStreak: 0,
 			}
 			states.set(agent, state)
 		}
@@ -87,17 +123,46 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			!state.stopping &&
 			ctx.agents.get(state.agent.id) === state.agent &&
 			state.agent.status === 'idle' &&
+			// Insert notifications may predate installation/restore, and idle clears
+			// the transient competing flag. Never overtake pending turn input.
+			state.agent.inbox.nextTurn.length === 0 &&
 			!state.competingQueued
 		)
 	}
 
-	/** Remove automatic authority while preserving the durable phase. */
-	function disarm(state: PerAgentState): void {
+	/** Cancel a pending interval wakeup. Safe to call when none is armed. */
+	function clearPace(state: PerAgentState): void {
+		if (state.paceTimer === undefined) return
+		clearTimeout(state.paceTimer)
+		state.paceTimer = undefined
+	}
+
+	/**
+	 * Remove automatic authority while preserving the durable phase, recording
+	 * why so an active-but-stopped loop can explain itself to a human instead of
+	 * simply going quiet.
+	 *
+	 * The recorded cause alone would still be silent — a checkpoint field nobody
+	 * reads mid-session. Announcing the stop as a conversation notice is what
+	 * makes it visible in the same place the round ran, in every client.
+	 */
+	function disarm(state: PerAgentState, reason: Omit<LoopPauseReason, 'at'>): void {
+		clearPace(state)
+		const loop = loopOf(state)
+		if (loop === undefined || !loop.armed) return
+		const stopped = controller.arm(state.agent.session.id, false, reason)
+		if (stopped === undefined) return
 		try {
-			const loop = loopOf(state)
-			if (loop !== undefined && loop.armed) controller.arm(state.agent.session.id, false)
+			// Queued as a followup so it lands in the conversation the human is
+			// already reading. A failing announcement must never undo the stop.
+			state.agent.followup(
+				createUserMessage({
+					content: renderLoopPauseNotice(reason),
+					source: { ...PLUGIN_SOURCE, form: 'notice', summary: boundContextSummary(`dsh-do loop paused: ${reason.code}`) },
+				}),
+			)
 		} catch (error) {
-			ctx.logger.warn(`dsh-do: could not disarm agent "${state.agent.id}": ${renderThrown(error)}`)
+			ctx.logger.warn(`dsh-do: could not announce the pause for agent "${state.agent.id}": ${renderThrown(error)}`)
 		}
 	}
 
@@ -124,6 +189,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			!state.stopping &&
 			attempt !== undefined &&
 			attempt.phase === 'claimed' &&
+			!state.competingQueued &&
 			!attempt.stale &&
 			sameQueued(content, source, attempt) &&
 			loop !== undefined &&
@@ -155,11 +221,29 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			return
 		}
 		const round = rounds + 1
+		// Claude Code's `/loop <interval>` fires its prompt immediately and then
+		// repeats on that cadence. The first round therefore runs at once and only
+		// later rounds wait, measured from when the previous round was queued.
+		if (loop.intervalMs !== undefined && state.lastRoundAt !== undefined) {
+			const wait = state.lastRoundAt + loop.intervalMs - Date.now()
+			if (wait > 0) {
+				// Wake on the remaining interval. The re-driven pass re-reads the loop,
+				// so a pause, edit, cancel, or teardown during the wait is honoured
+				// instead of queueing a stale round.
+				clearPace(state)
+				state.paceTimer = setTimeout(() => {
+					state.paceTimer = undefined
+					requestDrive(state)
+				}, Math.min(wait, MAX_TIMER_DELAY_MS))
+				return
+			}
+		}
 		const content = renderLoopRoundPrompt(loop.objective, round, loop.maxRounds)
 		const message = createUserMessage({ content, source: { kind: 'loop', loopId: loop.id, round } })
 		state.attempt = { loopId: loop.id, round, messageId: message.id, content, phase: 'queued', stale: false, cancelled: false }
 		try {
 			agent.followup(message)
+			state.lastRoundAt = Date.now()
 		} catch (error) {
 			state.attempt = undefined
 			ctx.logger.warn(`dsh-do: could not queue round ${round} for agent "${agent.id}": ${renderThrown(error)}`)
@@ -188,13 +272,13 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 						await drive(state)
 					} catch (error) {
 						ctx.logger.warn(`dsh-do: driver failed for agent "${state.agent.id}": ${renderThrown(error)}`)
-						disarm(state)
+						disarm(state, { code: 'driver-failed', message: `the loop driver failed: ${renderThrown(error)}` })
 					}
 				}
 			})
 		} catch (error) {
 			ctx.logger.warn(`dsh-do: could not start driver for agent "${state.agent.id}": ${renderThrown(error)}`)
-			disarm(state)
+			disarm(state, { code: 'driver-failed', message: `the loop driver could not start: ${renderThrown(error)}` })
 			return
 		}
 		state.run = run
@@ -204,7 +288,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 		}
 		run.then(retire, (error) => {
 			ctx.logger.warn(`dsh-do: driver task rejected for agent "${state.agent.id}": ${renderThrown(error)}`)
-			disarm(state)
+			disarm(state, { code: 'driver-failed', message: `the loop driver task was rejected: ${renderThrown(error)}` })
 			retire()
 		})
 	}
@@ -212,7 +296,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 	ctx.effect(async function* () {
 		if (restore !== undefined) await restore
 		ctx.on('agent/error', ({ agent }) => {
-			disarm(stateFor(agent))
+			disarm(stateFor(agent), { code: 'agent-error', message: 'the agent reported an error while the loop was running' })
 		})
 		ctx.on('agent/created', ({ agent }) => {
 			stateFor(agent)
@@ -224,6 +308,12 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			const state = stateFor(agent)
 			state.attempt = undefined
 			state.competingQueued = false
+			// A checkpoint restored at startup is read straight into the registry and
+			// never passes through a change notification, and an agent that starts
+			// after install misses the catch-up pass below. Without this nudge an
+			// armed loop that survived a restart would sit silent until some
+			// unrelated turn happened to make the agent idle again.
+			requestDrive(state)
 		})
 		ctx.on('agent/status', ({ agent, status }) => {
 			const state = stateFor(agent)
@@ -234,13 +324,15 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 				// A round that was cancelled (user or parent) disarms the loop so it
 				// does not fight the user; loop_start re-arms it later.
 				if ((attempt?.phase === 'queued' || attempt?.phase === 'claimed' || attempt?.cancelled) && loop?.phase === 'active' && loop.armed) {
+					const cancelledRound = attempt.round
 					state.attempt = undefined
-					try {
-						controller.arm(agent.session.id, false)
-					} catch (error) {
-						ctx.logger.warn(`dsh-do: could not disarm agent "${agent.id}" after a cancelled round: ${renderThrown(error)}`)
-						disarm(state)
-					}
+					// Route through disarm() so the stop is recorded AND announced:
+					// this is the path a real cancelled round takes, and it is the one
+					// that used to leave the loop silently stopped.
+					disarm(state, {
+						code: 'round-cancelled',
+						message: `round ${cancelledRound} was cancelled before it could run, so the loop stopped instead of retrying it`,
+					})
 				}
 				requestDrive(state)
 			}
@@ -271,6 +363,9 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			const state = stateFor(agent)
 			if (event.type === 'user/message') {
 				const source = event.data.source
+				// A human message starts a new piece of work: the continuation budget
+				// belongs to one cut-off answer, not to the whole session.
+				if ((source as { kind?: string } | undefined)?.kind === 'user') state.continueStreak = 0
 				if (isLoopSource(source)) {
 					if (state.attempt !== undefined && state.attempt.messageId === event.data.id) state.attempt.phase = 'admitted'
 					controller.recordAdmitted(session.id, source.loopId, source.round)
@@ -280,12 +375,49 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			if (event.type !== 'turn/end') return
 			const reason = event.data.reason
 			if (reason.kind === 'max-tokens') {
-				disarm(state)
+				const loop = loopOf(state)
+				const looping = loop !== undefined && loop.phase === 'active' && loop.armed
+				const policy = options.autoContinue?.()
+				if (policy !== undefined) {
+					const decision = decideAutoContinue(policy, state.continueStreak, looping)
+					if (decision.kind === 'continue') {
+						// Ask for the rest of the cut-off answer as a new turn. While it is
+						// pending the inbox is non-empty, so the driver does not queue the
+						// next round on top of it; the round count is not spent.
+						try {
+							state.agent.followup(
+								createUserMessage({
+									content: renderAutoContinuePrompt(decision.attempt, policy.maxContinuations),
+									source: {
+										...PLUGIN_SOURCE,
+										form: 'notice',
+										summary: boundContextSummary(`dsh-do output limit: continue ${decision.attempt}/${policy.maxContinuations}`),
+									},
+								}),
+							)
+							state.continueStreak = decision.attempt
+							return
+						} catch (error) {
+							ctx.logger.warn(`dsh-do: could not queue an output-limit continuation for agent "${agent.id}": ${renderThrown(error)}`)
+						}
+					} else if (decision.reason === 'exhausted') {
+						state.continueStreak = 0
+						disarm(state, { code: 'max-tokens', message: describeAutoContinueStop('exhausted', policy.maxContinuations) })
+						return
+					}
+				}
+				// Without (or past) auto-continue this is the harness goal-driver
+				// contract: an armed loop stops at an output-limit cut-off.
+				state.continueStreak = 0
+				disarm(state, { code: 'max-tokens', message: 'the last round hit the model output limit, so the loop stopped instead of retrying it' })
 				return
 			}
+			state.continueStreak = 0
 			if (reason.kind !== 'aborted') return
 			if (state.attempt?.phase === 'claimed' || state.attempt?.phase === 'admitted') state.attempt.cancelled = true
-			else disarm(state)
+			else {
+				disarm(state, { code: 'round-aborted', message: 'the running turn was aborted, so the loop stopped instead of retrying it' })
+			}
 		})
 		ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
 			const submitted = messages.find((message) => isLoopSource(message.source))
@@ -297,7 +429,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 				valid = validReservation(state, content, source)
 			} catch (error) {
 				ctx.logger.warn(`dsh-do: pre-step check failed for agent "${agent.id}": ${renderThrown(error)}`)
-				disarm(state)
+				disarm(state, { code: 'driver-failed', message: `the round reservation could not be verified: ${renderThrown(error)}` })
 			}
 			if (!valid) {
 				const attempt = state.attempt
@@ -338,7 +470,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 				valid = validReservation(state, content, source)
 			} catch (error) {
 				ctx.logger.warn(`dsh-do: post-decision check failed for agent "${agent.id}": ${renderThrown(error)}`)
-				disarm(state)
+				disarm(state, { code: 'driver-failed', message: `the round reservation could not be re-verified: ${renderThrown(error)}` })
 				valid = false
 			}
 			if (!valid) {
@@ -359,7 +491,9 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			const waits: Promise<unknown>[] = []
 			for (const state of states.values()) {
 				state.stopping = true
-				disarm(state)
+				// A teardown is a process shutdown, not a decision: record why so a
+				// loop that comes back disarmed can say a restart stopped it.
+				disarm(state, { code: 'restart', message: 'the harness shut down while this loop was armed' })
 				const attempt = state.attempt
 				if (attempt !== undefined) {
 					attempt.stale = true
@@ -374,4 +508,18 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			states.clear()
 		}
 	}, 'dsh-do.driver()')
+
+	/**
+	 * Resolve one session's live agent and re-run the driven pass. Called by the
+	 * controller's change sink, because starting a loop emits no agent lifecycle
+	 * event: `/loop <objective>` typed into an idle session would otherwise stay
+	 * armed with zero rounds started until something else made the agent idle.
+	 */
+	function nudge(sessionId: string): void {
+		const agent = ctx.agents.get(SessionId(sessionId))
+		if (agent === undefined) return
+		requestDrive(stateFor(agent))
+	}
+
+	return { nudge }
 }

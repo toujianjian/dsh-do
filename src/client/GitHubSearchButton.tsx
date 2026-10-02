@@ -3,14 +3,7 @@ import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-s
 import { AddWorkspaceDialog } from './AddWorkspaceDialog.tsx'
 import css from './GitHubSearch.module.css'
 
-/** One GitHub repository search hit. */
-interface GitHubRepo {
-  full_name: string
-  html_url: string
-  description: string | null
-  stargazers_count: number
-  language: string | null
-}
+import { createRequestLane, parseGitHubResults, type GitHubRepo } from './github.ts'
 
 /** Which GitHub query the panel is running. */
 type Tab = 'projects' | 'plugins'
@@ -69,10 +62,32 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
     repos: [],
   })
   const [installs, setInstalls] = useState<Record<string, InstallState>>({})
+  const lanes = useRef({ projects: createRequestLane(), plugins: createRequestLane() })
+  // Install requests live in the same lifecycle contract as the searches: an
+  // unmounted panel must not leave an install POST in flight.
+  const installLane = useRef(createRequestLane())
   const alive = useRef(true)
-  useEffect(() => () => { alive.current = false }, [])
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      lanes.current.projects.cancel()
+      lanes.current.plugins.cancel()
+      installLane.current.cancel()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [open])
 
   const runProjectsSearch = useCallback(async (rawQuery: string) => {
+    const request = lanes.current.projects.begin()
     setProjects((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
@@ -81,18 +96,20 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
       const q = terms.length === 0 ? 'dsh' : terms
       const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
         headers: { Accept: 'application/vnd.github+json' },
+        signal: request.signal,
       })
       if (!response.ok) throw new Error(`GitHub API ${response.status}`)
-      const payload = (await response.json()) as { items?: GitHubRepo[] }
-      if (!alive.current) return
-      setProjects({ status: 'done', repos: payload.items ?? [] })
+      const repos = parseGitHubResults(await response.json())
+      if (!alive.current || !request.isCurrent()) return
+      setProjects({ status: 'done', repos })
     } catch (error) {
-      if (!alive.current) return
+      if (!alive.current || !request.isCurrent()) return
       setProjects({ status: 'error', repos: [] })
     }
   }, [])
 
   const runPluginsSearch = useCallback(async (rawQuery: string) => {
+    const request = lanes.current.plugins.begin()
     setPlugins((current) => ({ ...current, status: 'loading' }))
     try {
       const terms = rawQuery.trim()
@@ -101,35 +118,38 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
       const q = terms.length === 0 ? 'dsh-plugin' : terms
       const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=8`, {
         headers: { Accept: 'application/vnd.github+json' },
+        signal: request.signal,
       })
       if (!response.ok) throw new Error(`GitHub API ${response.status}`)
-      const payload = (await response.json()) as { items?: GitHubRepo[] }
-      if (!alive.current) return
-      setPlugins({ status: 'done', repos: payload.items ?? [] })
+      const repos = parseGitHubResults(await response.json())
+      if (!alive.current || !request.isCurrent()) return
+      setPlugins({ status: 'done', repos })
     } catch (error) {
-      if (!alive.current) return
+      if (!alive.current || !request.isCurrent()) return
       setPlugins({ status: 'error', repos: [] })
     }
   }, [])
 
   /** Ask the host to open a new session with the install prompt. */
   const aiInstall = useCallback(async (name: string, prompt: string) => {
+    const request = installLane.current.begin()
     setInstalls((current) => ({ ...current, [name]: { name, status: 'working' } }))
     try {
       const response = await fetch('/dsh-do/ai-install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ prompt }),
+        signal: request.signal,
       })
       const payload = (await response.json()) as { ok: boolean; error?: string }
-      if (!alive.current) return
+      if (!alive.current || !request.isCurrent()) return
       if (!response.ok || payload.ok !== true) throw new Error(payload.error ?? `HTTP ${response.status}`)
       setInstalls((current) => ({
         ...current,
         [name]: { name, status: 'done', message: '已在新会话中开始安装' },
       }))
     } catch (error) {
-      if (!alive.current) return
+      if (!alive.current || !request.isCurrent()) return
       setInstalls((current) => ({
         ...current,
         [name]: { name, status: 'error', message: error instanceof Error ? error.message : String(error) },
@@ -224,7 +244,7 @@ export function GitHubSearchButton({ wide }: SidebarFooterActionOwnerProps) {
               <div className={css.errorText}>搜索失败（GitHub API 限流或网络问题），稍后再试。</div>
             )}
             {tab === 'projects' && projects.status === 'done' && projects.repos.length === 0 && (
-              <div className={css.muted}>没有找到匹配的 dsh-plugin 项目</div>
+              <div className={css.muted}>没有找到匹配的 GitHub 项目</div>
             )}
 
             {tab === 'plugins' && plugins.status === 'idle' && (

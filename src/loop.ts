@@ -11,11 +11,17 @@ import type { UserMessage } from '@deepseek-ai/dsh-session'
 
 /** Stable identity of one loop. */
 export type LoopId = string & { readonly __loopId: unique symbol }
-
 /** Mint a loop identity from its string form. */
 export function LoopId(value: string): LoopId {
 	return value as LoopId
 }
+
+/**
+ * Largest delay `setTimeout` accepts, and therefore the ceiling for a loop
+ * cadence: a longer one could never be scheduled. Also bounds a persisted
+ * `intervalMs`, so a hand-edited checkpoint cannot request an absurd pace.
+ */
+export const MAX_TIMER_DELAY_MS = 2147483647
 
 /** Lifecycle phase of a loop. */
 export type LoopPhase = 'active' | 'completed' | 'blocked' | 'cancelled'
@@ -24,6 +30,23 @@ export type LoopPhase = 'active' | 'completed' | 'blocked' | 'cancelled'
 export interface LoopBlockedReason {
 	readonly code: string
 	readonly message: string
+}
+
+/**
+ * Why an active loop stopped continuing on its own. The driver disarms a loop
+ * whenever the round it queued was rejected or the turn ended in a way the
+ * harness believes should not be retried automatically, which is the same
+ * contract the built-in goal driver follows. Recording the cause is what lets
+ * a status surface explain a stop instead of leaving it silent.
+ */
+export type LoopPauseReasonCode = 'round-cancelled' | 'round-aborted' | 'max-tokens' | 'agent-error' | 'driver-failed' | 'restart'
+
+/** A recorded stop, with the cause and when it was observed. */
+export interface LoopPauseReason {
+	readonly code: LoopPauseReasonCode
+	readonly message: string
+	/** Epoch ms the pause was recorded. */
+	readonly at: number
 }
 
 /**
@@ -38,9 +61,21 @@ export interface LoopState {
 	readonly objective: string
 	/** Cap on automatic continuation rounds. */
 	readonly maxRounds: number
+	/**
+	 * Minimum delay between rounds in milliseconds, from `/loop <interval> …`.
+	 * Absent means the driver queues the next round as soon as the agent is
+	 * idle, which is the behavior of `loop_start`.
+	 */
+	readonly intervalMs?: number
 	readonly phase: LoopPhase
 	/** Whether the driver may queue the next round automatically. */
 	readonly armed: boolean
+	/**
+	 * Why an active loop is disarmed. Present only while `phase === 'active'`
+	 * and `armed === false`, i.e. exactly when a human cannot tell from the
+	 * loop's own output whether it is working or stopped.
+	 */
+	readonly pausedReason?: LoopPauseReason
 	/** Highest round admitted into the session log, last known. */
 	readonly roundsStarted: number
 	readonly blockedReason?: LoopBlockedReason
@@ -55,6 +90,8 @@ export interface CreateLoopInput {
 	readonly sessionId: string
 	readonly objective: string
 	readonly maxRounds: number
+	/** Optional minimum delay between rounds; omit for immediate continuation. */
+	readonly intervalMs?: number
 	readonly now?: number
 }
 
@@ -66,12 +103,23 @@ export function createLoop(input: CreateLoopInput): LoopState {
 		sessionId: input.sessionId,
 		objective: input.objective,
 		maxRounds: input.maxRounds,
+		...(input.intervalMs === undefined ? {} : { intervalMs: input.intervalMs }),
 		phase: 'active',
 		armed: true,
 		roundsStarted: 0,
 		startedAt: now,
 		updatedAt: now,
 	}
+}
+
+/**
+ * Replace the loop's objective in place, keeping its phase, arming, admitted
+ * rounds and cadence. A round already queued by the driver keeps the text it
+ * was queued with; every round queued afterwards restates the new objective.
+ */
+export function editLoopObjective(loop: LoopState, objective: string, now?: number): LoopState {
+	if (loop.objective === objective) return loop
+	return touch({ ...loop, objective }, now)
 }
 
 function touch(loop: LoopState, now = Date.now()): LoopState {
@@ -84,10 +132,25 @@ export function markRoundAdmitted(loop: LoopState, round: number, now?: number):
 	return touch({ ...loop, roundsStarted: round }, now)
 }
 
-/** Arm or disarm the loop without changing its phase. */
-export function armLoop(loop: LoopState, armed: boolean, now?: number): LoopState {
-	if (loop.armed === armed) return loop
-	return touch({ ...loop, armed }, now)
+/**
+ * Arm or disarm the loop without changing its phase. Arming clears any recorded
+ * pause; disarming without a reason keeps the previous one, so a later
+ * unexplained disarm cannot erase why the loop first stopped.
+ */
+export function armLoop(loop: LoopState, armed: boolean, reason?: Omit<LoopPauseReason, 'at'>, now?: number): LoopState {
+	if (armed) {
+		if (loop.armed && loop.pausedReason === undefined) return loop
+		const { pausedReason: _dropped, ...rest } = loop
+		return touch({ ...rest, armed: true }, now)
+	}
+	if (!loop.armed && reason === undefined) return loop
+	return touch({ ...loop, armed: false, ...(reason === undefined ? {} : { pausedReason: { ...reason, at: now ?? Date.now() } }) }, now)
+}
+
+/** Record why an already-disarmed active loop stopped. No-op once armed. */
+export function markPaused(loop: LoopState, reason: Omit<LoopPauseReason, 'at'>, now?: number): LoopState {
+	if (loop.armed || loop.phase !== 'active') return loop
+	return touch({ ...loop, pausedReason: { ...reason, at: now ?? Date.now() } }, now)
 }
 
 /** Mark the loop completed and disarm it. */

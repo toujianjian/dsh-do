@@ -22,6 +22,22 @@ export type LoopEnding = {
     reason?: string;
 };
 /**
+ * Render the notice written into the conversation when the driver stops
+ * continuing an active loop.
+ *
+ * A stopped loop used to be indistinguishable from a working one: the round
+ * simply stopped arriving and nothing said why. This notice closes that gap by
+ * reporting the cause where the rounds were visible, and restating how to
+ * resume, so the human does not have to inspect a checkpoint file to find out.
+ * @param reason - the recorded stop cause.
+ * @param loopId - the stopped loop's identity, echoed for `/loop` follow-ups.
+ * @returns a fresh one-block notice for `Agent.followup()`.
+ */
+export declare function renderLoopPauseNotice(reason: {
+    readonly code: string;
+    readonly message: string;
+}, loopId?: string): ContentBlock[];
+/**
  * Render the closing-message instruction injected after an autonomous loop
  * round reports `loop_done` or `loop_cancel`, so the model still addresses
  * the user once before the turn ends.

@@ -7,12 +7,16 @@
  * @module dsh-do/client
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+// Type-only: pulls the settings slot-type contract that declares
+// `settings.section` (and its `{ close }` owner share).
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the ui-sidebar SlotMap merge that declares
 // `sidebar.footer.action` (and its `{ wide }` owner share).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 // Type-only: pulls the ui-slots SlotMap/registration vocabulary.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { openAddWorkspaceDialog, setWorkspacesService } from './addWorkspace.ts'
+import { DoSettingsPage } from './DoSettingsPage.tsx'
 import { GitHubSearchButton } from './GitHubSearchButton.tsx'
 
 /** Required services: the slot registry and the workspaces face. */
@@ -27,7 +31,7 @@ const ADD_WORKSPACE_BUTTON_SELECTOR = 'button[aria-label="添加工作区"], but
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  setWorkspacesService(ctx.workspaces)
+  ctx.effect(() => setWorkspacesService(ctx.workspaces), 'dsh-do: workspace dialog state')
 
   ctx.effect(() => {
     const onContextMenu = (event: MouseEvent) => {
@@ -53,4 +57,14 @@ export function apply(ctx: ClientContext): void {
     }, GitHubSearchButton)
     return dispose
   })
+
+  // The dsh-DO settings page. `slots.inject` waits for the settings shell to
+  // declare `settings.section`, so a deployment without a settings surface keeps
+  // the sidebar entry and simply shows no page.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'dsh-do',
+    order: 40,
+    label: 'dsh-DO',
+  }, DoSettingsPage))
 }

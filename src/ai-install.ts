@@ -7,7 +7,7 @@
  * @module dsh-do/ai-install
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rmdir } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -65,14 +65,25 @@ const INSTALL_WORKSPACES_DIR = 'dsh-do-installs'
  * @param child - the plugin's sibling context (for `workspaceRegistry`).
  * @returns the absolute existing directory to use as the session cwd.
  */
-async function createInstallWorkspace(child: Context): Promise<string> {
+async function createInstallWorkspace(child: Context): Promise<{ path: string; rollback: () => Promise<void> }> {
   const dir = join(resolveDshHome(), INSTALL_WORKSPACES_DIR, `install-${randomUUID()}`)
   await mkdir(dir, { recursive: true })
   const registry = child.get('workspaceRegistry')
-  if (registry !== undefined && typeof registry.create === 'function') {
-    await registry.create(dir, 'DSH 插件安装')
+  try {
+    const workspace = await registry.create(dir, 'DSH 插件安装')
+    return {
+      path: dir,
+      rollback: async () => {
+        await registry.delete(workspace.id)
+        // Never recursively delete a workspace: preserve any files a failed
+        // setup may already have created. Only empty owned directories go.
+        await rmdir(dir).catch(() => undefined)
+      },
+    }
+  } catch (error) {
+    await rmdir(dir).catch(() => undefined)
+    throw error
   }
-  return dir
 }
 
 /**
@@ -128,7 +139,26 @@ export function installAiInstallRoute(ctx: Context): void {
         path: AI_INSTALL_PATH,
         handler: async (req: IncomingMessage, res: ServerResponse) => {
           if (req.method !== 'POST') {
+            res.setHeader('Allow', 'POST')
             json(res, 405, { ok: false, error: 'method not allowed (use POST)' })
+            return
+          }
+          // Browser requests must originate from this host. Requiring JSON also
+          // prevents cross-origin HTML forms from submitting install prompts.
+          const origin = req.headers.origin
+          let foreignOrigin = false
+          if (origin !== undefined) {
+            try {
+              const url = new URL(origin)
+              foreignOrigin = !['http:', 'https:'].includes(url.protocol) || url.host !== req.headers.host
+            } catch { foreignOrigin = true }
+          }
+          if (foreignOrigin || req.headers['sec-fetch-site'] === 'cross-site') {
+            json(res, 403, { ok: false, error: 'cross-site installation request denied' })
+            return
+          }
+          if (req.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+            json(res, 415, { ok: false, error: 'application/json is required' })
             return
           }
           let body: unknown
@@ -145,6 +175,8 @@ export function installAiInstallRoute(ctx: Context): void {
             json(res, 400, { ok: false, error: 'prompt is required' })
             return
           }
+          let rollbackWorkspace: (() => Promise<void>) | undefined
+          let disposeAgent: (() => Promise<void>) | undefined
           try {
             const sessionId = `dsh-do-install-${randomUUID()}` as SessionId
             // The persona template renders `{{model}}` and `{{cwd}}`, so the
@@ -156,7 +188,6 @@ export function installAiInstallRoute(ctx: Context): void {
               json(res, 500, { ok: false, error: 'no model route available (agentDefaultModel has no selection and no live agent has provider/model)' })
               return
             }
-            const cwd = await createInstallWorkspace(child)
             // A fresh session needs the deployment's agent preset mounted in its
             // scope to see the normal tool registry (bash/fs/web/…). Without it
             // the agent resolves its prompt/tools against the empty global layer
@@ -167,6 +198,13 @@ export function installAiInstallRoute(ctx: Context): void {
             const presetId = agentPresets !== undefined && typeof agentPresets.defaultId === 'string' && agentPresets.defaultId !== ''
               ? agentPresets.defaultId
               : undefined
+            if (presetId === undefined || typeof agentPresets?.mount !== 'function' || typeof child.get('workspaceRegistry')?.create !== 'function' || typeof child.get('workspaceRegistry')?.delete !== 'function') {
+              json(res, 503, { ok: false, error: 'installation requires an agent preset and workspace registry' })
+              return
+            }
+            const workspace = await createInstallWorkspace(child)
+            rollbackWorkspace = workspace.rollback
+            const cwd = workspace.path
             const handle = await child.agents.create({
               sessionId,
               agentOptions: route,
@@ -175,9 +213,10 @@ export function installAiInstallRoute(ctx: Context): void {
                 ...(presetId !== undefined ? { agentPreset: presetId } : {}),
               },
               setup: async (agentCtx) => {
-                if (presetId !== undefined) await agentCtx.get('agentPresets')?.mount(agentCtx, presetId)
+                await agentPresets.mount(agentCtx, presetId)
               },
             })
+            disposeAgent = () => handle.dispose()
             handle.agent.followup(createUserMessage({
               content: [{ type: 'text', text: prompt }],
               source: {
@@ -187,8 +226,18 @@ export function installAiInstallRoute(ctx: Context): void {
                 summary: boundContextSummary(`AI install: ${prompt.slice(0, 60)}`),
               },
             }))
+            // Once queued, the installation session and workspace are durable
+            // user-visible results, not resources to roll back on HTTP failure.
+            disposeAgent = undefined
+            rollbackWorkspace = undefined
             json(res, 200, { ok: true, sessionId })
           } catch (error) {
+            try {
+              await disposeAgent?.()
+              await rollbackWorkspace?.()
+            } catch (cleanupError) {
+              child.logger.warn(`dsh-do: install rollback failed: ${String(cleanupError)}`)
+            }
             json(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
           }
         },

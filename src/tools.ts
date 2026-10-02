@@ -85,12 +85,20 @@ function completionAuthority(ctx: Context, execution: LoopToolExecution, loop: L
 }
 
 /** Compact canonical view of one loop, matching the output schema. */
+/** Every recorded stop cause, as the output schema advertises them. */
+const PAUSE_REASON_CODES = ['round-cancelled', 'round-aborted', 'max-tokens', 'agent-error', 'driver-failed', 'restart']
+
 export interface LoopView {
 	loop: {
 		id: string
 		objective: string
 		phase: LoopState['phase']
 		armed: boolean
+		/**
+		 * Why an active-but-disarmed loop stopped. The model needs this: without it
+		 * `armed: false` alone does not say whether to wait, retry, or ask.
+		 */
+		pausedReason?: { code: string; message: string; at: number }
 		roundsStarted: number
 		maxRounds: number
 		blockedReason?: { code: string; message: string }
@@ -102,14 +110,16 @@ export interface LoopView {
 }
 
 /** Stable compact model result; `armed` is an observation, not replay state. */
-function loopValue(agent: Agent, loop: LoopState | undefined): LoopView {
-	if (loop === undefined) return { loop: null }
+function loopValue(agent: Agent, loop: LoopState | undefined): LoopView {	if (loop === undefined) return { loop: null }
 	return {
 		loop: {
 			id: loop.id,
 			objective: loop.objective,
 			phase: loop.phase,
 			armed: loop.armed,
+			...(loop.pausedReason === undefined || loop.phase !== 'active' || loop.armed
+				? {}
+				: { pausedReason: { code: loop.pausedReason.code, message: loop.pausedReason.message, at: loop.pausedReason.at } }),
 			roundsStarted: effectiveRounds(agent, loop),
 			maxRounds: loop.maxRounds,
 			...(loop.blockedReason === undefined
@@ -130,17 +140,26 @@ const LOOP_OUTPUT = {
 		additionalProperties: false,
 		properties: {
 			loop: {
+				required: true,
 				oneOf: [
-					{ type: 'null', required: true },
+					{ type: 'null' },
 					{
 						type: 'object',
 						additionalProperties: false,
-						required: true,
 						properties: {
 							id: { type: 'string', required: true },
 							objective: { type: 'string', required: true },
 							phase: { type: 'string', required: true, enum: ['active', 'completed', 'blocked', 'cancelled'] },
 							armed: { type: 'boolean', required: true },
+							pausedReason: {
+								type: 'object',
+								additionalProperties: false,
+								properties: {
+									code: { type: 'string', required: true, enum: PAUSE_REASON_CODES },
+									message: { type: 'string', required: true },
+									at: { type: 'number', required: true },
+								},
+							},
 							roundsStarted: { type: 'integer', required: true },
 							maxRounds: { type: 'integer', required: true },
 							blockedReason: {
@@ -170,7 +189,7 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
 }
 
 const START_DESCRIPTION =
-	'Start one Claude Code-style autonomous loop for the current session: the driver then auto-continues across turns, re-queueing the objective as <loop_round> prompts until the model calls loop_done, the round budget is exhausted, or the loop is cancelled. Use when a direct human request is a long-running objective that should keep iterating in this same session. If an active loop exists but is disarmed (e.g. after a cancelled round), this re-arms it with the stored objective. Execution rejects non-human and subagent authority.'
+	'Start one Claude Code-style autonomous loop for the current session: the driver then auto-continues across turns, re-queueing the objective as <loop_round> prompts until the model calls loop_done, the round budget is exhausted, or the loop is cancelled. Use when a direct human request is a long-running objective that should keep iterating in this same session. If an active loop exists but is disarmed (e.g. after a cancelled round), it is replaced by this objective with a fresh round budget. An armed loop is never clobbered: inspect it with loop_status, stop it with loop_cancel, or let it finish. Execution rejects non-human and subagent authority.'
 
 const STATUS_DESCRIPTION =
 	'Read the current loop for this session, including its exact id, objective, phase, rounds started, round budget, blocked reason when present, and whether it is armed to continue. Call this before loop_done or loop_cancel.'
@@ -182,7 +201,7 @@ const CANCEL_DESCRIPTION =
 	'Mark the current loop cancelled with an optional concrete reason. Allowed only from a direct human turn or the current loop round; otherwise rejected. When called from a loop round, the driver ends the autonomous run and asks the model to write the closing message.'
 
 /** Register the four loop tools. */
-export function registerLoopTools(ctx: Context, controller: LoopController, config: { defaultMaxRounds: number }): void {
+export function registerLoopTools(ctx: Context, controller: LoopController, config: { defaultMaxRounds: () => number }): void {
 	ctx.tools.register(
 		defineTool({
 			name: 'loop_start',
@@ -202,7 +221,7 @@ export function registerLoopTools(ctx: Context, controller: LoopController, conf
 			execute(args, exec) {
 				const execution = loopToolExecution(ctx, exec)
 				requireDirectHuman(ctx, execution)
-				const maxRounds = args.max_rounds === undefined ? config.defaultMaxRounds : args.max_rounds
+				const maxRounds = args.max_rounds === undefined ? config.defaultMaxRounds() : args.max_rounds
 				if (!Number.isSafeInteger(maxRounds) || maxRounds < 1) {
 					throw new HarnessError('max_rounds must be a positive safe integer', 'LOOP_TOOL_INVALID_ROUNDS')
 				}

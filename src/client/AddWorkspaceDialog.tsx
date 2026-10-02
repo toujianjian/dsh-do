@@ -3,6 +3,7 @@ import {
   closeAddWorkspaceDialog,
   getAddWorkspaceDialogState,
   getWorkspacesService,
+  isCurrentWorkspaceDialog,
   subscribeAddWorkspaceDialog,
 } from './addWorkspace.ts'
 import css from './AddWorkspaceDialog.module.css'
@@ -23,8 +24,12 @@ export function AddWorkspaceDialog() {
   const [failure, setFailure] = useState<string | null>(null)
   const [mobile, setMobile] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const request = useRef<symbol | undefined>(undefined)
+  useEffect(() => () => { request.current = undefined }, [])
 
   useEffect(() => {
+    request.current = undefined
+    setPending(false)
     if (!state.open) return
     setValue('')
     setFailure(null)
@@ -44,9 +49,10 @@ export function AddWorkspaceDialog() {
       cancelAnimationFrame(frame)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [state.open])
+  }, [state])
 
   const submit = useCallback(async () => {
+    if (request.current !== undefined || !isCurrentWorkspaceDialog(state)) return
     const path = value.trim()
     if (path.length === 0) {
       setFailure('请输入一个目录路径（Windows 如 C:\\work\\repo，POSIX 如 /home/user/repo）')
@@ -57,18 +63,24 @@ export function AddWorkspaceDialog() {
       setFailure('workspaces 服务尚未就绪，请稍后再试')
       return
     }
+    const token = Symbol('workspace-request')
+    request.current = token
+    const current = () => request.current === token && isCurrentWorkspaceDialog(state)
     setPending(true)
     setFailure(null)
     try {
       await workspaces.create({ path })
-      closeAddWorkspaceDialog()
+      if (current()) closeAddWorkspaceDialog()
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setFailure(`添加失败：${message}`)
+      if (current()) {
+        const message = error instanceof Error ? error.message : String(error)
+        setFailure(`添加失败：${message}`)
+      }
     } finally {
-      setPending(false)
+      if (current()) setPending(false)
+      if (request.current === token) request.current = undefined
     }
-  }, [value])
+  }, [value, state])
 
   if (!state.open) return null
 

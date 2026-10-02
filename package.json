@@ -1,7 +1,7 @@
 {
   "name": "dsh-do",
   "version": "0.1.0",
-  "description": "dsh-DO (Detail Optimization): a Claude Code-style autonomous loop for DeepSeek Harness — auto-continue across turns until loop_done, the round budget, or cancellation, with durable checkpoints — plus a browser half (floating orb with install advice and GitHub dsh-plugin search, and a right-click add-workspace paste dialog).",
+  "description": "dsh-DO (Detail Optimization): one DeepSeek Harness plugin for durable autonomous loops, sidebar GitHub discovery, AI-assisted installation, and workspace shortcuts.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -64,10 +64,14 @@
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-layout": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-compaction": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -84,12 +88,9 @@
     "build": "npm run build:host && npm run build:client",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "watch": "tsdown --watch",
-    "test": "npm run build:host && node --test test/loop.test.mjs test/checkpoint.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "dsh-loop-detector": "link:dsh-loop-detector"
   }
 }

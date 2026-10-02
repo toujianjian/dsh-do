@@ -20,8 +20,13 @@ const listeners = new Set<() => void>()
 /** The workspaces service face captured at plugin apply time (root-scoped UI has no other handle). */
 let workspacesService: IWorkspaces | undefined
 
-export function setWorkspacesService(service: IWorkspaces): void {
+export function setWorkspacesService(service: IWorkspaces): () => void {
   workspacesService = service
+  return () => {
+    if (workspacesService !== service) return
+    workspacesService = undefined
+    closeAddWorkspaceDialog()
+  }
 }
 
 export function getWorkspacesService(): IWorkspaces | undefined {
@@ -43,6 +48,11 @@ export function subscribeAddWorkspaceDialog(listener: () => void): () => void {
 export function openAddWorkspaceDialog(x: number, y: number): void {
   state = { open: true, x, y }
   for (const listener of listeners) listener()
+}
+
+/** Apply an asynchronous result only to the exact dialog opening that requested it. */
+export function isCurrentWorkspaceDialog(snapshot: AddWorkspaceDialogState): boolean {
+  return state === snapshot && state.open
 }
 
 /** Close the dialog. */

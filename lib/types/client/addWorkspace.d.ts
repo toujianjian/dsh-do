@@ -12,7 +12,7 @@ export interface AddWorkspaceDialogState {
     readonly x: number;
     readonly y: number;
 }
-export declare function setWorkspacesService(service: IWorkspaces): void;
+export declare function setWorkspacesService(service: IWorkspaces): () => void;
 export declare function getWorkspacesService(): IWorkspaces | undefined;
 /** Read the current dialog state (useSyncExternalStore snapshot). */
 export declare function getAddWorkspaceDialogState(): AddWorkspaceDialogState;
@@ -20,6 +20,8 @@ export declare function getAddWorkspaceDialogState(): AddWorkspaceDialogState;
 export declare function subscribeAddWorkspaceDialog(listener: () => void): () => void;
 /** Open the dialog at the given viewport coordinates (from a right-click). */
 export declare function openAddWorkspaceDialog(x: number, y: number): void;
+/** Apply an asynchronous result only to the exact dialog opening that requested it. */
+export declare function isCurrentWorkspaceDialog(snapshot: AddWorkspaceDialogState): boolean;
 /** Close the dialog. */
 export declare function closeAddWorkspaceDialog(): void;
 //# sourceMappingURL=addWorkspace.d.ts.map

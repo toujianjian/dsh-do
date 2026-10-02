@@ -14,13 +14,21 @@ export interface LoopToolExecution {
     readonly agent: Agent;
     readonly events: readonly SessionEvent[];
 }
-/** Compact canonical view of one loop, matching the output schema. */
 export interface LoopView {
     loop: {
         id: string;
         objective: string;
         phase: LoopState['phase'];
         armed: boolean;
+        /**
+         * Why an active-but-disarmed loop stopped. The model needs this: without it
+         * `armed: false` alone does not say whether to wait, retry, or ask.
+         */
+        pausedReason?: {
+            code: string;
+            message: string;
+            at: number;
+        };
         roundsStarted: number;
         maxRounds: number;
         blockedReason?: {
@@ -35,5 +43,5 @@ export interface LoopView {
 }
 /** Register the four loop tools. */
 export declare function registerLoopTools(ctx: Context, controller: LoopController, config: {
-    defaultMaxRounds: number;
+    defaultMaxRounds: () => number;
 }): void;

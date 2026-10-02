@@ -9,7 +9,8 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { LoopPhase, LoopState } from './loop.js'
+import type { LoopPauseReasonCode, LoopPhase, LoopState } from './loop.js'
+import { MAX_TIMER_DELAY_MS } from './loop.js'
 
 /** On-disk envelope for one loop checkpoint. */
 interface CheckpointFile {
@@ -27,6 +28,9 @@ export function serializeCheckpoint(loop: LoopState): string {
 }
 
 const PHASES: readonly LoopPhase[] = ['active', 'completed', 'blocked', 'cancelled']
+
+/** Accepted pause causes; a record naming another one is corrupt. */
+const PAUSE_CODES: readonly LoopPauseReasonCode[] = ['round-cancelled', 'round-aborted', 'max-tokens', 'agent-error', 'driver-failed', 'restart']
 
 /** Tolerant parse of one checkpoint file; returns the loop or a reason. */
 export function parseCheckpoint(
@@ -46,7 +50,7 @@ export function parseCheckpoint(
 	if (version !== 1) return { ok: false, error: `file ${fileName} has unsupported version ${String(version)}` }
 	if (typeof loop !== 'object' || loop === null) return { ok: false, error: `file ${fileName} has no loop record` }
 	const state = loop as Record<string, unknown>
-	if (typeof state.id !== 'string' || typeof state.sessionId !== 'string' || typeof state.objective !== 'string') {
+	if (typeof state.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(state.id) || typeof state.sessionId !== 'string' || state.sessionId.length === 0 || typeof state.objective !== 'string') {
 		return { ok: false, error: `file ${fileName} has an invalid loop record` }
 	}
 	if (typeof state.maxRounds !== 'number' || !Number.isSafeInteger(state.maxRounds) || state.maxRounds < 1) {
@@ -62,12 +66,53 @@ export function parseCheckpoint(
 	const blockedReason = state.blockedReason
 	if (blockedReason !== undefined) {
 		const reason = blockedReason as Record<string, unknown>
-		if (typeof reason.code !== 'string' || typeof reason.message !== 'string') {
+		if (typeof reason !== 'object' || reason === null || Array.isArray(reason) || typeof reason.code !== 'string' || typeof reason.message !== 'string') {
 			return { ok: false, error: `file ${fileName} has an invalid blockedReason` }
 		}
 	}
+	// A recorded pause explains why an active loop stopped continuing. A damaged
+	// one would make the status surface invent a cause or show none, so a wrong
+	// shape is a corrupt record rather than a field to drop.
+	const pausedReason = state.pausedReason
+	if (pausedReason !== undefined) {
+		const reason = pausedReason as Record<string, unknown>
+		if (
+			typeof reason !== 'object' ||
+			reason === null ||
+			Array.isArray(reason) ||
+			!PAUSE_CODES.includes(reason.code as LoopPauseReasonCode) ||
+			typeof reason.message !== 'string' ||
+			typeof reason.at !== 'number' ||
+			!Number.isFinite(reason.at)
+		) {
+			return { ok: false, error: `file ${fileName} has an invalid pausedReason` }
+		}
+		if (state.armed === true) return { ok: false, error: `file ${fileName} records a pause while armed` }
+		if (state.phase !== 'active') return { ok: false, error: `file ${fileName} records a pause on a ${String(state.phase)} phase` }
+	}
+	// Optional payloads are either a string or absent; a wrong type is a corrupt
+	// record, not a value to silently drop. Accepting it would let a damaged file
+	// report a loop whose summary/reason vanished without any diagnostic.
+	for (const key of ['completedSummary', 'cancelledReason'] as const) {
+		if (state[key] !== undefined && typeof state[key] !== 'string') {
+			return { ok: false, error: `file ${fileName} has an invalid ${key}` }
+		}
+	}
+	// `armed` is automatic-continuation authority; a terminal phase has already
+	// revoked it. A record claiming both would make loop_status report an armed
+	// completed loop and mislead the model's next decision.
+	if (state.phase !== 'active' && state.armed === true) {
+		return { ok: false, error: `file ${fileName} has an armed ${String(state.phase)} phase` }
+	}
+	// A cadence is a positive whole number of milliseconds or absent. A wrong
+	// type is a corrupt record: silently dropping it would silently turn a paced
+	// loop into an unpaced one that burns its whole round budget back to back.
+	const intervalMs = state.intervalMs
+	if (intervalMs !== undefined && (typeof intervalMs !== 'number' || !Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > MAX_TIMER_DELAY_MS)) {
+		return { ok: false, error: `file ${fileName} has an invalid intervalMs` }
+	}
 	for (const key of ['startedAt', 'updatedAt'] as const) {
-		if (typeof state[key] !== 'number') return { ok: false, error: `file ${fileName} has an invalid ${key}` }
+		if (typeof state[key] !== 'number' || !Number.isFinite(state[key])) return { ok: false, error: `file ${fileName} has an invalid ${key}` }
 	}
 	return {
 		ok: true,
@@ -76,8 +121,18 @@ export function parseCheckpoint(
 			sessionId: state.sessionId,
 			objective: state.objective,
 			maxRounds: state.maxRounds,
+			...(intervalMs === undefined ? {} : { intervalMs }),
 			phase: state.phase as LoopPhase,
 			armed: state.armed,
+			...(pausedReason === undefined
+				? {}
+				: {
+						pausedReason: {
+							code: (pausedReason as { code: LoopPauseReasonCode }).code,
+							message: (pausedReason as { message: string }).message,
+							at: (pausedReason as { at: number }).at,
+						},
+					}),
 			roundsStarted: state.roundsStarted,
 			...(blockedReason === undefined
 				? {}
@@ -126,6 +181,7 @@ export class LoopStore {
 	) {}
 
 	private path(loopId: string): string {
+		if (!/^[A-Za-z0-9_-]+$/.test(loopId)) throw new Error('invalid checkpoint loop id')
 		return join(this.root, `${FILE_PREFIX}${loopId}${FILE_SUFFIX}`)
 	}
 
