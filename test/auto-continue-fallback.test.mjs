@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { decideAutoContinue, renderAutoContinuePrompt } from '../lib/types/auto-continue.js'
 import { chooseFallback, parseModelRoute } from '../lib/types/model-fallback.js'
-import { coerceValue, executeConfigCommand, findField, parseConfigCommand, CONFIG_FIELDS } from '../lib/types/config-command.js'
+import { coerceValue, displayWidth, executeConfigCommand, findField, parseConfigCommand, CONFIG_FIELDS, CONFIG_GROUPS } from '../lib/types/config-command.js'
 import { Config, DEFAULT_FALLBACK_CODES } from '../lib/types/settings.js'
 
 const continueOn = { enabled: true, maxContinuations: 3, onlyWhileLooping: true }
@@ -130,8 +130,48 @@ test('/do-config writes through the settings service and reads the new value bac
 	assert.equal(settings.get('dsh-do').modelFallback.enabled, false)
 
 	const listing = await executeConfigCommand(settings, '', 'X')
-	assert.equal(listing.lines.length, CONFIG_FIELDS.length + 1)
+	const listingText = listing.lines.join('\n')
+	// The listing is grouped, so assert coverage rather than a flat line count.
+	for (const field of CONFIG_FIELDS) {
+		const line = listing.lines.find((candidate) => candidate.includes(field.path))
+		assert.ok(line !== undefined, `listing is missing ${field.path}`)
+	}
+	assert.match(listingText, /modelFallback\.candidates\s+deepseek\/deepseek-chat, openai\/gpt-4o/)
 	assert.match((await executeConfigCommand(settings, 'file', 'C:/h/settings.yaml')).lines[0], /settings\.yaml/)
+})
+
+test('every config field appears in exactly one group, and vice versa', () => {
+	const grouped = CONFIG_GROUPS.flatMap((group) => group.paths)
+	assert.deepEqual([...grouped].sort(), CONFIG_FIELDS.map((field) => field.path).sort())
+	assert.equal(new Set(grouped).size, grouped.length)
+})
+
+test('the listing box is a rectangle, and colouring does not move the columns', async () => {
+	const settings = fakeSettings()
+	const plain = (await executeConfigCommand(settings, '', 'X')).lines
+	const colored = (await executeConfigCommand(settings, '', 'X', { color: true })).lines
+	const strip = (line) => line.replace(/\u001B\[[0-9;]*m/g, '')
+
+	assert.deepEqual(colored.map(strip), plain, 'ANSI must not change the visible text')
+	assert.ok(colored.some((line) => line.includes('\u001B[')), 'the TUI path should colour')
+	assert.ok(plain.every((line) => !line.includes('\u001B[')), 'the plain path must not colour')
+
+	const boxLines = plain.filter((line) => /^[╭│╰]/.test(line))
+	assert.ok(boxLines.length >= 3)
+	assert.equal(new Set(boxLines.map(displayWidth)).size, 1, `box rows differ: ${boxLines.map(displayWidth).join(',')}`)
+})
+
+test('the listing aligns every field on one value column', async () => {
+	const settings = fakeSettings()
+	const listing = await executeConfigCommand(settings, '', 'X')
+	const fieldLines = listing.lines.filter((line) => /^ {3}\S/.test(line))
+	assert.equal(fieldLines.length, CONFIG_FIELDS.length)
+	const columns = fieldLines.map((line) => {
+		const match = /^ {3}(\S+)( +)/.exec(line)
+		assert.ok(match !== null, line)
+		return 3 + match[1].length + match[2].length
+	})
+	assert.equal(new Set(columns).size, 1, `value column drifted: ${columns.join(',')}`)
 })
 
 test('/do-config refuses bad input without writing', async () => {
@@ -140,4 +180,25 @@ test('/do-config refuses bad input without writing', async () => {
 	assert.equal((await executeConfigCommand(settings, 'autoContinue.maxContinuations zero', 'X')).ok, false)
 	assert.equal(settings.ops.length, 0)
 	assert.equal((await executeConfigCommand(undefined, '', 'X')).ok, false)
+})
+
+test('a live section reference is unwrapped, so no field renders as unset', async () => {
+	// DSH 0.1.x resolves a section whose schema carries the volatile marker into a
+	// live reference holding `get()` instead of the value. Read raw it stringifies
+	// to `{}`, every path misses, and the whole listing shows `—` — which is what
+	// the real TUI did before the read went through plainSettings.
+	const value = Config({})
+	const reference = { [Symbol.for('cosmokit.volatile.write')]: true, get: () => value }
+	const settings = { get: (ns) => (ns === 'dsh-do' ? reference : undefined), async mutate() {} }
+
+	const listing = await executeConfigCommand(settings, '', 'X')
+	const text = listing.lines.join('\n')
+	assert.ok(!text.includes('—'), `a field rendered as unset:\n${text}`)
+	assert.match(text, /defaultMaxRounds\s+20/)
+	assert.match(text, /loopDetection\.repeatThreshold\s+4/)
+	assert.match(text, /modelFallback\.triggerCodes\s+RATE_LIMIT, QUOTA, SERVER, TIMEOUT, TRANSPORT, EMPTY_RESPONSE/)
+
+	// The single-field read must unwrap too, or `set` confirms with `—`.
+	const show = await executeConfigCommand(settings, 'persist', 'X')
+	assert.match(show.lines.join('\n'), /persist = true/)
 })

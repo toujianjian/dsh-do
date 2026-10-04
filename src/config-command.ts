@@ -19,7 +19,7 @@
  * @module dsh-do/config-command
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { DSH_DO_NS, isDoSection } from './settings.js'
+import { DSH_DO_NS, isDoSection, plainSettings } from './settings.js'
 import { isTuiCommandRegistry, TUI_COMMANDS_SERVICE } from './tui.js'
 
 /** Command name; distinct from the TUI builtin `/config` so prefixes stay unambiguous. */
@@ -48,6 +48,43 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
 	{ path: 'modelFallback.enabled', type: 'boolean', help: '模型失败时自动切换到候选模型' },
 	{ path: 'modelFallback.candidates', type: 'list', help: '候选模型，按顺序，写作 provider/model，逗号分隔' },
 	{ path: 'modelFallback.triggerCodes', type: 'list', help: '触发切换的错误码，逗号分隔' },
+]
+
+/** One display group: a heading, a one-line hint, and the fields it holds. */
+export interface ConfigGroup {
+	readonly title: string
+	readonly note: string
+	readonly paths: readonly string[]
+}
+
+/**
+ * Display grouping for the `/do-config` listing — the flat 13-line list was
+ * unreadable, so related knobs are shown together under a heading.
+ *
+ * Every path here must exist in {@link CONFIG_FIELDS}, and every field must
+ * appear exactly once; a test asserts the two cover each other.
+ */
+export const CONFIG_GROUPS: readonly ConfigGroup[] = [
+	{
+		title: '循环',
+		note: '每轮推进与检查点',
+		paths: ['defaultMaxRounds', 'checkpointDir', 'persist'],
+	},
+	{
+		title: '自动继续',
+		note: '输出被 token 上限截断时接着写',
+		paths: ['autoContinue.enabled', 'autoContinue.maxContinuations', 'autoContinue.onlyWhileLooping'],
+	},
+	{
+		title: '模型自动切换',
+		note: '模型报错时改用候选模型',
+		paths: ['modelFallback.enabled', 'modelFallback.candidates', 'modelFallback.triggerCodes'],
+	},
+	{
+		title: '循环检测',
+		note: '重复调用同一工具时干预',
+		paths: ['loopDetection.enabled', 'loopDetection.repeatThreshold', 'loopDetection.compact', 'loopDetection.maxInterventions'],
+	},
 ]
 
 /** The slice of the settings service this command uses. */
@@ -190,11 +227,137 @@ export function formatSetting(value: unknown): string {
 	return String(value)
 }
 
-/** Every line `/do-config` prints for the full listing. */
-export function renderConfigListing(resolved: unknown): string[] {
-	const lines = ['dsh-do 设置（/do-config <路径> <值> 修改，/do-config reset <路径> 恢复默认）']
-	for (const field of CONFIG_FIELDS) lines.push(`  ${field.path} = ${formatSetting(readPath(resolved, field.path))}    # ${field.help}`)
+/** Rendering options for the listing. */
+export interface ListingOptions {
+	/**
+	 * Emit ANSI attributes. The TUI writes command output straight into its
+	 * scrollback (which is colour-aware), but the harness `commands` service
+	 * renders plain text — escapes there would surface as literal `[1m`.
+	 */
+	readonly color?: boolean
+}
+
+/** ANSI SGR sequences this module emits; attributes only, never a hue. */
+const SGR_RE = /\u001B\[[0-9;]*m/g
+
+/** Code points that occupy two terminal cells (CJK, fullwidth forms, emoji). */
+function isWide(codePoint: number): boolean {
+	return (
+		(codePoint >= 0x1100 && codePoint <= 0x115f) ||
+		(codePoint >= 0x2e80 && codePoint <= 0x303e) ||
+		(codePoint >= 0x3041 && codePoint <= 0x33ff) ||
+		(codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
+		(codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
+		(codePoint >= 0xa000 && codePoint <= 0xa4cf) ||
+		(codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+		(codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+		(codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+		(codePoint >= 0xff00 && codePoint <= 0xff60) ||
+		(codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+		(codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+		(codePoint >= 0x1f900 && codePoint <= 0x1f9ff)
+	)
+}
+
+/**
+ * Terminal cell width of a string, counting CJK as two cells.
+ *
+ * ANSI sequences are dropped first so padding stays correct when the same text
+ * is measured painted or unpainted.
+ *
+ * @param text - the text to measure.
+ * @returns its width in terminal cells.
+ */
+export function displayWidth(text: string): number {
+	let width = 0
+	for (const char of text.replace(SGR_RE, '')) width += isWide(char.codePointAt(0) ?? 0) ? 2 : 1
+	return width
+}
+
+/** Attribute wrappers; no-ops when colour is off. */
+function makePainter(color: boolean): { bold: (text: string) => string; dim: (text: string) => string } {
+	const wrap = (code: string) => (text: string) => (color ? `\u001B[${code}m${text}\u001B[0m` : text)
+	return { bold: wrap('1'), dim: wrap('2') }
+}
+
+/**
+ * Draw a rounded box around a title and its content rows.
+ *
+ * @param title - box heading.
+ * @param rows - content rows (already painted; measurement strips ANSI).
+ * @returns the box lines, all the same width.
+ */
+function renderBox(title: string, rows: readonly string[]): string[] {
+	const inner = Math.max(displayWidth(title) + 4, ...rows.map((row) => displayWidth(row) + 2))
+	const head = `╭─ ${title} ${'─'.repeat(Math.max(0, inner - displayWidth(title) - 3))}╮`
+	const body = rows.map((row) => `│ ${row}${' '.repeat(Math.max(0, inner - displayWidth(row) - 1))}│`)
+	return [head, ...body, `╰${'─'.repeat(inner)}╯`]
+}
+
+/** The four ways to drive this command, laid out two per row inside the box. */
+function commandHelpRows(): string[] {
+	const cells = ([
+		['改', '/do-config <路径> <值>'],
+		['看', '/do-config <路径>'],
+		['还原', '/do-config reset <路径>'],
+		['文件', '/do-config file'],
+	] as ReadonlyArray<readonly [string, string]>).map(([label, body]) => `${label} ${body}`)
+	const gap = Math.max(displayWidth(cells[0] ?? ''), displayWidth(cells[2] ?? '')) + 3
+	const row = (left: string, right: string): string => `${left}${' '.repeat(Math.max(1, gap - displayWidth(left)))}${right}`
+	return [row(cells[0] ?? '', cells[1] ?? ''), row(cells[2] ?? '', cells[3] ?? '')]
+}
+
+/** `（已关闭）` when a group owns an `enabled` switch that is off. */
+function groupOffMark(group: ConfigGroup, resolved: unknown): string {
+	for (const path of group.paths) {
+		if (path === 'enabled' || path.endsWith('.enabled')) return readPath(resolved, path) === false ? '（已关闭）' : ''
+	}
+	return ''
+}
+
+/**
+ * Every line `/do-config` prints for the full listing: a command box, then one
+ * aligned block per group.
+ *
+ * @param resolved - the resolved dsh-DO config.
+ * @param options - rendering options (see {@link ListingOptions}).
+ * @returns the listing lines.
+ */
+export function renderConfigListing(resolved: unknown, options: ListingOptions = {}): string[] {
+	const paint = makePainter(options.color === true)
+	const pathWidth = Math.max(...CONFIG_FIELDS.map((field) => displayWidth(field.path)))
+	const lines = renderBox('dsh-DO 设置', commandHelpRows())
+	for (const group of CONFIG_GROUPS) {
+		const off = groupOffMark(group, resolved)
+		lines.push('', `${paint.bold(`◆ ${group.title}`)}${paint.dim(` · ${group.note}`)}${off === '' ? '' : paint.bold(off)}`)
+		for (const path of group.paths) {
+			const shown = formatSetting(readPath(resolved, path))
+			const pad = ' '.repeat(Math.max(1, pathWidth - displayWidth(path) + 2))
+			lines.push(`   ${paint.dim(path)}${pad}${paint.bold(shown)}`)
+		}
+	}
+	lines.push('', paint.dim('改完立即生效，无需重启；也可以直接编辑设置文件里的 dsh-do: 段。'))
 	return lines
+}
+
+/**
+ * Detail view for one field: current value, accepted shape, and what it does.
+ *
+ * @param field - the field to describe.
+ * @param resolved - the resolved dsh-DO config.
+ * @param color - emit ANSI attributes.
+ * @returns the detail lines.
+ */
+function renderFieldDetail(field: ConfigField, resolved: unknown, color: boolean): string[] {
+	const paint = makePainter(color)
+	const kind = { boolean: '开关（on/off）', integer: '整数', string: '文本', list: '列表（逗号分隔）' }[field.type]
+	const floor = field.min === undefined ? '' : `，最小 ${field.min}`
+	return [
+		`${paint.bold(field.path)} = ${paint.bold(formatSetting(readPath(resolved, field.path)))}`,
+		paint.dim(`  类型  ${kind}${floor}`),
+		paint.dim(`  说明  ${field.help}`),
+		paint.dim(`  改法  /do-config ${field.path} <值>`),
+	]
 }
 
 /** Outcome of one command. */
@@ -204,21 +367,44 @@ export interface ConfigOutcome {
 }
 
 /**
+ * Read dsh-DO's section with every live reference unwrapped.
+ *
+ * The service hands the section back exactly as its schema resolved it, and a
+ * schema marked volatile resolves to a live reference carrying `get()` rather
+ * than to a plain object — reading that raw yields an empty shape and every
+ * field renders as unset. Unwrapping here is the contract every consumer of the
+ * section has to honour, on both generations of the service.
+ *
+ * @param settings - the access face, already known to be mounted.
+ * @returns the section's current value as plain data.
+ */
+function readSection(settings: SettingsAccess): unknown {
+	return plainSettings(settings.get(DSH_DO_NS))
+}
+
+/**
  * Run one `/do-config` command against the settings service.
  *
  * @param settings - the settings service, or undefined when none is mounted.
  * @param text - the text after the command name.
  * @param fileHint - where the settings document lives, for `file`.
+ * @param options - rendering options (see {@link ListingOptions}).
  */
-export async function executeConfigCommand(settings: SettingsAccess | undefined, text: string, fileHint: string): Promise<ConfigOutcome> {
+export async function executeConfigCommand(
+	settings: SettingsAccess | undefined,
+	text: string,
+	fileHint: string,
+	options: ListingOptions = {},
+): Promise<ConfigOutcome> {
+	const paint = makePainter(options.color === true)
 	if (settings === undefined) {
 		return { ok: false, lines: ['当前组合没有挂载 settings 服务，dsh-do 设置只能来自 cordis.patch.yml 的组合配置。'] }
 	}
 	const command = splitAssignment(parseConfigCommand(text))
-	const resolved = settings.get(DSH_DO_NS)
+	const resolved = readSection(settings)
 	switch (command.kind) {
 		case 'list':
-			return { ok: true, lines: renderConfigListing(resolved) }
+			return { ok: true, lines: renderConfigListing(resolved, options) }
 		case 'file':
 			return {
 				ok: true,
@@ -227,13 +413,14 @@ export async function executeConfigCommand(settings: SettingsAccess | undefined,
 		case 'show': {
 			const field = findField(command.path)
 			if (field === undefined) return { ok: false, lines: [unknownPath(command.path)] }
-			return { ok: true, lines: [`${field.path} = ${formatSetting(readPath(resolved, field.path))}    # ${field.help}`] }
+			return { ok: true, lines: renderFieldDetail(field, resolved, options.color === true) }
 		}
 		case 'reset': {
 			const field = findField(command.path)
 			if (field === undefined) return { ok: false, lines: [unknownPath(command.path)] }
 			await settings.mutate(DSH_DO_NS, [{ op: 'unset', path: field.path.split('.') }])
-			return { ok: true, lines: [`${field.path} 已恢复默认：${formatSetting(readPath(settings.get(DSH_DO_NS), field.path))}`] }
+			const now = formatSetting(readPath(readSection(settings), field.path))
+			return { ok: true, lines: [`✓ ${field.path} 已恢复默认：${paint.bold(now)}`] }
 		}
 		case 'set': {
 			const field = findField(command.path)
@@ -241,7 +428,8 @@ export async function executeConfigCommand(settings: SettingsAccess | undefined,
 			const coerced = coerceValue(field, command.raw)
 			if (!coerced.ok) return { ok: false, lines: [coerced.error] }
 			await settings.mutate(DSH_DO_NS, [{ op: 'set', path: field.path.split('.'), value: coerced.value }])
-			return { ok: true, lines: [`${field.path} = ${formatSetting(readPath(settings.get(DSH_DO_NS), field.path))}（已保存，立即生效）`] }
+			const now = formatSetting(readPath(readSection(settings), field.path))
+			return { ok: true, lines: [`✓ ${field.path} = ${paint.bold(now)}（已保存，立即生效）`] }
 		}
 	}
 }
@@ -266,9 +454,9 @@ export function installConfigCommand(ctx: Context): void {
 		const home = process.env.DSH_HOME ?? `${process.env.USERPROFILE ?? process.env.HOME ?? '~'}/.dsh`
 		return `${home.replace(/[\\/]+$/, '')}${process.platform === 'win32' ? '\\' : '/'}settings.yaml`
 	}
-	const run = async (text: string): Promise<ConfigOutcome> => {
+	const run = async (text: string, color = false): Promise<ConfigOutcome> => {
 		try {
-			return await executeConfigCommand(settingsOf(), text, fileHint())
+			return await executeConfigCommand(settingsOf(), text, fileHint(), { color })
 		} catch (error) {
 			return { ok: false, lines: [`保存失败：${renderError(error)}`] }
 		}
@@ -294,7 +482,7 @@ export function installConfigCommand(ctx: Context): void {
 			description: 'dsh-DO 设置：查看/修改自动继续、模型切换、循环检测等',
 			argsHint: '[<路径> [<值>] | reset <路径> | file]',
 			run: async ({ text, echo }) => {
-				const outcome = await run(text)
+				const outcome = await run(text, true)
 				outcome.lines.forEach((line, index) => echo(index === 0 && !outcome.ok ? `⚠ ${line}` : line))
 			},
 		})

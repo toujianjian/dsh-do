@@ -1,0 +1,14 @@
+# 模型自动切换验收用的覆盖层：baseURL 指向 mock + 打开 modelFallback。
+# 用 `dsh --profile tui --patch /root/mock-fallback-patch.yml` 叠加，不改 profile 本体。
+- id: llm-deepseek
+  config:
+    baseURL: http://127.0.0.1:8899
+- id: do
+  config:
+    defaultMaxRounds: 20
+    checkpointDir: ''
+    persist: true
+    modelFallback:
+      enabled: true
+      candidates:
+        - deepseek-official/deepseek-v4-pro

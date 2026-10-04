@@ -30,6 +30,20 @@ export interface ConfigField {
 }
 /** Every user-editable dsh-DO setting, in display order. */
 export declare const CONFIG_FIELDS: readonly ConfigField[];
+/** One display group: a heading, a one-line hint, and the fields it holds. */
+export interface ConfigGroup {
+    readonly title: string;
+    readonly note: string;
+    readonly paths: readonly string[];
+}
+/**
+ * Display grouping for the `/do-config` listing — the flat 13-line list was
+ * unreadable, so related knobs are shown together under a heading.
+ *
+ * Every path here must exist in {@link CONFIG_FIELDS}, and every field must
+ * appear exactly once; a test asserts the two cover each other.
+ */
+export declare const CONFIG_GROUPS: readonly ConfigGroup[];
 /** The slice of the settings service this command uses. */
 export interface SettingsAccess {
     get(ns: string): unknown;
@@ -83,8 +97,34 @@ export declare function coerceValue(field: ConfigField, raw: string): {
 export declare function readPath(value: unknown, path: string): unknown;
 /** Display form of a value. */
 export declare function formatSetting(value: unknown): string;
-/** Every line `/do-config` prints for the full listing. */
-export declare function renderConfigListing(resolved: unknown): string[];
+/** Rendering options for the listing. */
+export interface ListingOptions {
+    /**
+     * Emit ANSI attributes. The TUI writes command output straight into its
+     * scrollback (which is colour-aware), but the harness `commands` service
+     * renders plain text — escapes there would surface as literal `[1m`.
+     */
+    readonly color?: boolean;
+}
+/**
+ * Terminal cell width of a string, counting CJK as two cells.
+ *
+ * ANSI sequences are dropped first so padding stays correct when the same text
+ * is measured painted or unpainted.
+ *
+ * @param text - the text to measure.
+ * @returns its width in terminal cells.
+ */
+export declare function displayWidth(text: string): number;
+/**
+ * Every line `/do-config` prints for the full listing: a command box, then one
+ * aligned block per group.
+ *
+ * @param resolved - the resolved dsh-DO config.
+ * @param options - rendering options (see {@link ListingOptions}).
+ * @returns the listing lines.
+ */
+export declare function renderConfigListing(resolved: unknown, options?: ListingOptions): string[];
 /** Outcome of one command. */
 export interface ConfigOutcome {
     readonly ok: boolean;
@@ -96,8 +136,9 @@ export interface ConfigOutcome {
  * @param settings - the settings service, or undefined when none is mounted.
  * @param text - the text after the command name.
  * @param fileHint - where the settings document lives, for `file`.
+ * @param options - rendering options (see {@link ListingOptions}).
  */
-export declare function executeConfigCommand(settings: SettingsAccess | undefined, text: string, fileHint: string): Promise<ConfigOutcome>;
+export declare function executeConfigCommand(settings: SettingsAccess | undefined, text: string, fileHint: string, options?: ListingOptions): Promise<ConfigOutcome>;
 /**
  * Register `/do-config` in every command registry the composition offers.
  *

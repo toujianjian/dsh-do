@@ -1,0 +1,5 @@
+# 只做一件事：把 llm-deepseek 的 baseURL 指到容器里的 mock。
+# 用 `dsh --profile tui --patch /root/mock-patch.yml` 叠加，不改 profile 本体。
+- id: llm-deepseek
+  config:
+    baseURL: http://127.0.0.1:8899

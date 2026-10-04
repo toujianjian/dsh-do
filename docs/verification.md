@@ -393,7 +393,215 @@ if (form === undefined) return []
 ### 仍未声称完成
 
 - **0.2.0 的设置「保存」走不通，但根因在平台**：`POST /dsh-do/settings` 返回 500 `dsh: profile reload requires the root Include entry`。**对照实验证明与 dsh-do 无关**——写平台自带的 `agent-default-model` 段报**完全相同**的错。该错来自 `@deepseek-ai/dsh-app-boot` 的 `reconcileProfilePatches()`：它要求启动时 `mountRootInclude()` 已把 root Include entry 注册进 `bootstrapIncludes` WeakMap，而 0.2.0-rc.2 上该注册未发生。读路径完全正常（见下），写路径是 0.2.x 从「写 settings.yaml」改成「改 profile patch + 重载 profile」后新引入的，属平台侧问题，dsh-do 只如实透传平台原文并以 500 归类。**待上游修复后需重验保存。**
-- **真实模型凭证下的端到端 loop**：容器一律用哑元凭证，只能证明"驱动起了第 1 轮并正确暂停"，不能证明多轮推进与 `loop_done` 收尾。
+- ~~**真实模型凭证下的端到端 loop**~~：**已用本地 mock LLM 补上**（见文末「第九轮」）——多轮推进（3 轮，实测间隔 59.948s / 59.998s）与 `loop_done` 收尾、`phase=completed` 均已实测。**仍未验的是「真实模型」下的多轮质量**，不是循环机器本身。
 - `dsh plugin allow-version` 的确切用法未查明（静默无输出且闸门未解除），本轮是靠放宽 `peerDependencies` 走通的。
 - **Web 半在 0.1.5-rc.3 上仍未起过**：本轮补上了 0.2.0-rc.2 的 Web 组合，0.1.5-rc.3 的 Web 组合仍只有 TUI 证据。
+
+## 第九轮（真实 TUI 多轮循环：用本地 mock LLM 把「一轮轮跑下去」测出来）
+
+**要补的缺口**：容器一贯用哑元凭证，循环第 1 轮就因 `llm-deepseek: no API key` 报错暂停，于是「多轮推进」与「`loop_done` 收尾」始终无法验证。真实凭证会烧额度，而且容器必须联网——联网又会让 TUI 自我升级把 profile 弄坏。
+
+**做法**：把 provider 的 baseURL 指到容器内的 mock，循环就能真跑，且完全不需要外网。
+
+| 环节 | 做法 |
+| --- | --- |
+| endpoint 覆盖 | `dsh --profile tui --patch /root/mock-patch.yml`，patch 为 `- id: llm-deepseek` + `config.baseURL: http://127.0.0.1:8899`（**不改 profile 本体**） |
+| 凭证 | `DEEPSEEK_API_KEY=dummy-mock-key`：`dsh-credentials-local` 的优先级是**继承进程环境（胜出，只读）** > `$DSH_HOME/.credentials.yaml` > `cwd/.env` > `$DSH_HOME/.env` |
+| mock | `test-docker/mock-llm.mjs`：DeepSeek 兼容 SSE（`POST /chat/completions`、`stream:true`、末行 `data: [DONE]`；chunk 形如 `{choices:[{delta:{content\|tool_calls},finish_reason}]}`，`finish_reason` 只认 `stop`/`tool_calls`/`length`） |
+| 剧本 | 按请求体里最后一个 `Round: N/M` 判定轮次：第 1、2 轮回文本，**第 3 轮调用 `loop_done`** |
+| 驱动 | `test-docker/verify-loop-multiround.sh`（TUI 真实 PTY：`/loop 1m <目标>` → 等 150s → `/status`） |
+
+**为什么容器可以保持断网**：mock 跑在容器 localhost，不需要外网——既免掉真实凭证，也避开了 TUI 自我升级。注意 TUI 的最短节奏是 **1 分钟**（`MIN_INTERVAL_MS = 60000`，写 `30s` 会被抬上去），3 轮约 2 分钟。
+
+### 实测结果（容器 `dsh-env` / profile `tui` = dsh 0.1.0-rc.8 + tui 0.1.1-rc.6 + dsh-do `7082BFB3ECF67CF2`）
+
+mock 侧收到 4 个请求（独立计数，与界面互证）：
+
+```
+08:07:54.224  round=1  text
+08:08:54.172  round=2  text        ← +59.948s
+08:09:54.170  round=3  loop_done   ← +59.998s
+08:09:54.217  wrapup   wrapup-text ← +47ms
+```
+
+会话日志（多帧 zstd 逐帧解码）给出的完整逐轮记录：
+
+```
+seq=7   user/message source={kind:"loop", loopId:"loop-c713613e", round:1}
+seq=16  assistant/message "mock 第 1 轮：继续推进目标。"
+seq=18  turn/end reason={kind:"completed"}
+seq=23  user/message source={kind:"loop", loopId:"loop-c713613e", round:2}
+seq=29  assistant/message "mock 第 2 轮：继续推进目标。"
+seq=31  turn/end reason={kind:"completed"}
+seq=36  user/message source={kind:"loop", loopId:"loop-c713613e", round:3}
+seq=42  assistant/message tool-call loop_done {summary:"mock 在第 3 轮判定目标达成"}
+seq=44  tool/result                      ← loop_done 真的执行了
+seq=49  user/message source={plugin:"dsh-do", form:"notice", summary:"loop_done: 多轮循环验证目标"}
+seq=55  assistant/message "循环已完成：mock 在第 3 轮调用 loop_done 收尾。"
+```
+
+检查点（`loop-c713613e`）：
+
+```json
+{ "objective": "多轮循环验证目标", "maxRounds": 20, "intervalMs": 60000,
+  "phase": "completed", "armed": false, "roundsStarted": 3,
+  "completedSummary": "mock 在第 3 轮判定目标达成" }
+```
+
+`/status` 面板：`◆ 循环 · 已结束` / `多轮循环验证目标` / `↻ 轮次 3/20`；状态行 `API ✓`；启动期无错误；pty 以超时收割退出（非崩溃）。
+
+### 由此证实的四件事
+
+1. **TUI 里 `/loop` 端到端可用**：命令入口、状态机、驱动、状态显示、收尾，全链路。
+2. **驱动唤醒补丁在生产生效**：斜杠命令不产生任何 agent 生命周期事件，而第 1 轮在命令后 **59ms** 内就入队并发出了请求——只可能是 `LoopChangeNotifier → nudge` 这条路径（此前只有单测证据，见第五轮）。
+3. **节奏是被强制执行的**：请求 `1m`，实测两轮间隔 **59.948s / 59.998s**。
+4. **`loop_done` 收尾链路完整**：工具执行 → dsh-do 写入 notice → 收尾提示词 → 模型写结束语 → `phase=completed` 且落 `completedSummary`。
+
+### 边界（勿过度声称）
+
+- mock 只证明**循环机器**正确，不证明真实模型下的多轮质量；真实凭证下的端到端仍属未验。
+- 本轮只测了 tui profile（0.1.0-rc.8）；0.1.5 / 0.1.7 / 0.2.0 组合未做多轮。
+- 测完已把容器恢复原样（凭证文件、全局 CLI 版本、网络）。
+
+## 第十轮（模型自动切换：对照实验证实「先重试、后切换」）
+
+**要验的**：`modelFallback` 在**真实 429** 下是否真的切换模型（此前只有单测；真实限流下的行为未验）。
+
+**做法**：同一个 mock，让**主模型一律回 HTTP 429、其它模型回 200**，两组之间唯一变量就是开关。
+
+| | 做法 |
+| --- | --- |
+| mock | `test-docker/mock-llm-fallback.mjs`：按请求体里的 `model` 判定——主模型（`deepseek-v4-flash`）回 429，其它模型回 200；200 的回复文本里**自报模型名**，界面直接可读 |
+| 429 响应体 | `{"error":{"message":"Rate limit reached for requests","type":"rate_limit_error"}}`。**刻意不含 quota 字样**——provider 的 `httpErrorCode()` 会把 `[error.code, error.type, error.message]` 拼串**先**判 `isQuotaExceededError()`，命中就变成 QUOTA 码，测不到 RATE_LIMIT 路径 |
+| 实验组 | `test-docker/mock-fallback-patch.yml`：`modelFallback.enabled: true`、候选 `deepseek-official/deepseek-v4-pro` |
+| 对照组 | 同一份 mock，patch 里不写 `modelFallback`（默认 `false`） |
+| 驱动 | `test-docker/verify-model-fallback.sh`（两轮真实 PTY） |
+
+**wire 事实（从真实 provider / dsh-llm 读出来的）**：HTTP 429 → 错误码 `RATE_LIMIT`；官方 `dsh-llm-retry` 默认 `maxRetries=5`、初始 500ms 指数退避、`maxDelayMs=10000`、`jitterRatio=0.1`，且 `RATE_LIMIT` **属于可重试码**；dsh-do 的默认触发码是 `RATE_LIMIT / QUOTA / SERVER / TIMEOUT / TRANSPORT / EMPTY_RESPONSE`（`enabled` 默认 `false`、`candidates` 默认空）。
+
+### 实测结果
+
+| | 主模型 429 次数 | 候选模型 200 | 界面 |
+| --- | --- | --- | --- |
+| 对照组（开关关） | 7 | 0 | `x Rate limit reached for requests`，无回复 |
+| 实验组（开关开） | 7 | **1**（`deepseek-v4-pro`） | **「我是 deepseek-v4-pro，由本地 mock 应答。」**，无报错 |
+
+实验组主模型的请求时刻与间隔：
+
+```
+08:40:49.906  初始
+08:40:50.402  +497ms
+08:40:51.508  +1106ms
+08:40:53.427  +1919ms
+08:40:57.572  +4145ms
+08:41:04.855  +7283ms                    ← 第 5 次重试（初始 + maxRetries 5）
+08:41:04.871  deepseek-v4-pro → 200      ← 仅隔 16ms
+```
+
+退避实测 497/1106/1919/4145/7283ms，与 500/1000/2000/4000/8000 ±10% 抖动吻合；主模型请求数正好是「1 次初始 + 5 次重试」，等于 `DEFAULT_MAX_RETRIES`。（另有 1 次同刻的 429 来自会话标题生成，与切换无关。）
+
+### 由此证实的四件事
+
+1. **顺序正确**：官方重试**先跑完**（5 次退避 ≈ 15.5s）才轮到 dsh-do 切换——不是一遇错就跳模型。
+2. **真的换了模型**：mock 侧看到发往 `deepseek-v4-pro` 的请求，界面回复也自报 `deepseek-v4-pro`。
+3. **切换是即时的**：重试链放弃后 **16ms** 内就发出了候选模型的请求。
+4. **对照组如实失败**：同一份 mock 下关掉开关即请求全败并报错——证明起作用的确实是 fallback，而不是别的什么。
+
+### 边界（勿过度声称）
+
+- 只验了**单候选 + 单一触发码**（`RATE_LIMIT`）。多候选依次降级，以及 `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` / `EMPTY_RESPONSE` 各码，未逐一分测。
+- **「粘性」未单独验**（切换保持到真人消息为止；loop 轮次、插件 notice、自动续写都不重置）——本轮是单轮对话，没有可观察的重置点。
+- 日志行 `dsh-do: … switching agent "…" to …` 走 `ctx.logger.info`，TUI 界面不回显、容器里也未见日志文件，故本轮证据取自 **mock 侧请求序列 + 界面回复**。
+
+## 第十一轮（TUI 配置界面重做 + 修掉「所有值都显示 —」的真实回归）
+
+**用户的诉求**：TUI 里的配置界面能不能更好看些、支持鼠标操作。选定路线 =「先美化 dsh-do 自己的 `/do-config`，同时给上游提需求」，**不动 TUI 的 `/config` 面板**。
+
+### 1）界面重做（`/do-config`）
+
+原来是一行一个字段的平铺列表（`defaultMaxRounds = 20    # 说明`），13 行糊成一片。现在：
+
+```
+╭─ dsh-DO 设置 ───────────────────────────────────────╮
+│ 改 /do-config <路径> <值>      看 /do-config <路径> │
+│ 还原 /do-config reset <路径>   文件 /do-config file │
+╰─────────────────────────────────────────────────────╯
+◆ 循环 · 每轮推进与检查点
+   defaultMaxRounds                25
+   checkpointDir                   ""
+   persist                         true
+◆ 自动继续 · 输出被 token 上限截断时接着写
+   autoContinue.enabled            true
+   autoContinue.maxContinuations   3
+   autoContinue.onlyWhileLooping   true
+◆ 模型自动切换 · 模型报错时改用候选模型（已关闭）
+   modelFallback.enabled           false
+   modelFallback.candidates        []
+   modelFallback.triggerCodes      RATE_LIMIT, QUOTA, SERVER, TIMEOUT, TRANSPORT, EMPTY_RESPONSE
+◆ 循环检测 · 重复调用同一工具时干预
+   loopDetection.enabled           true
+   loopDetection.repeatThreshold   4
+   loopDetection.compact           true
+   loopDetection.maxInterventions  2
+改完立即生效，无需重启；也可以直接编辑设置文件里的 dsh-do: 段。
+```
+
+要点：**四个分组**（循环 / 自动继续 / 模型自动切换 / 循环检测）各带一句用途；盒子是矩形（自检发现过一版 `renderBox` 的头部宽度算成 `inner+1`、与主体 `inner+2` 不齐，已修并加回归测试）；**所有值对齐到同一列**，且**宽字符按两格算**（`displayWidth()` 自己算 CJK/全角/emoji，不能用 `String.length`，否则中文说明会把列推歪）；某组开关关掉时组标题追加 `（已关闭）`。
+
+**配色只用 ANSI 属性（粗体 `1` / 暗色 `2`），绝不用颜色**：插件够不到 TUI 主题，硬编码色号在浅色终端上会糊。且**只在 TUI 路径上开**——harness 的 `commands` 服务（web/headless）渲染纯文本，转义序列会原样显示出来。实测 TUI 里 ANSI 真的透传：抓到的原始流里有 22 个 `ESC[1m`、21 个 `ESC[2m`，剥掉后与纯文本逐字相同。
+
+### 2）真实回归：`/do-config` 在 0.1.x 上所有值都是 `—`
+
+美化做完去真实 TUI 里验收，发现**13 个字段全是 `—`**。先自查：把本轮的 `src/config-command.ts` stash 掉重建，**依旧全 `—`** —— 不是本轮引入的。
+
+**对照实验定性**：同一个容器、同一个 profile、同一份 `settings.yaml`，换回**已发布的 0.1.0** 构建 → 值全部正常（`loopDetection.repeatThreshold = 4`、`modelFallback.triggerCodes = RATE_LIMIT, QUOTA, …`）。所以这是 **`8e658cb`（适配 0.2.0-rc.2 那个提交）引入的回归**。
+
+**逐步缩小**：
+
+| 步骤 | 观察 | 结论 |
+| --- | --- | --- |
+| 真实 TUI 跑 `/do-config` | 无「没有挂载 settings 服务」那句 | 服务在、`adaptSettingsAccess` 没返回 undefined |
+| `/do-config defaultMaxRounds 25` | `settings.yaml` 真的写入 `dsh-do: defaultMaxRounds: 25`，但确认行回读仍是 `—（已保存，立即生效）` | **写正常、读空** |
+| 临时探针打印服务形状 | `register=fn get=fn mutate=fn describe=fn`，`get(DSH_DO_NS)={}` | `register` **存在**，guard 通过、注册发生了；但段解析成**空对象** |
+| 加 `DSH_DO_NO_VOLATILE=1` 开关关掉 volatile 标记 | `get(DSH_DO_NS)={"defaultMaxRounds":25,"persist":true,"loopDetection":{…},"autoContinue":{…},…}` | **根因锁定** |
+
+**根因**：`Config = volatile(z.object({…}))`（为 0.2.x 能显示该段而加的标记）。容器里 schemastery 是 **3.18.4，`.volatile()` 存在**，于是标记**真的被套用**了；而 0.1.x 的 settings 服务把带该标记的 schema 解析成**活引用对象**（只有 symbol 键，`JSON.stringify` 就是 `{}`），`readPath` 自然什么都找不到 → 全 `—`。
+
+`plainSettings()` 的文档早就写明「**每次访问都必须经它解包，且绝不缓存**」，`/do-config` 却直接用了 `settings.get()` 的原始值 —— **违反了自己模块的契约**。
+
+**修复**：读取统一过 `readSection()`（= `plainSettings(settings.get(DSH_DO_NS))`），列表、`show`、以及 `set`/`reset` 的回读三处全部改走它。**没有动 volatile 标记本身**——0.2.x 靠它才显示该段，动了会砸掉已验的 0.2.x。
+
+**复测**（volatile 标记保持开启，即原失败条件）：真实 TUI 里 `/do-config` 现在显示真值，连 `settings.yaml` 里的用户覆盖 `defaultMaxRounds: 25` 都正确读到。
+
+新增回归测试「a live section reference is unwrapped, so no field renders as unset」：假服务 `get()` 返回一个带 `Symbol.for('cosmokit.volatile.write')` 的活引用，断言列表**不含 `—`** 且含具体默认值、`show` 也解包。**已验证该测试有牙齿**——把 `readSection` 退回原始 `get()` 后它立刻转红（`fail 1`），恢复修复后转绿。
+
+### 3）鼠标操作：TUI 侧目前做不到（已另开上游需求）
+
+查证结论：`@huiliyi37/dsh-tianshu-tui` 的 `lib/index.js` 里明确写着「鼠标事件（SGR mouse protocol）— 暂不处理」，全文件搜 `1000h / 1006h / 1002h / 1003h / 1004h` **一处都没有** —— 终端鼠标模式从未被打开（只有 `?1049h` 备用屏）。所以鼠标点击在 TUI 里**不是配置问题，是能力缺失**。
+
+另外，TUI **内部**是有 overlay 体系的（`OverlayEngine` / `OverlayController` / `OverlayRenderer`，`render(width, height) → string[]`；`/config`、命令面板、keymap、搜索都是 overlay），但**没有对插件开放**：插件唯一的扩展点是 `ctx.provide('tui.commands', registry)`，而命令 `run()` 拿到的是 Cordis `Context`，**够不到 overlay 控制器**。因此「插件注册一个全屏可点面板」这条路当前不存在。
+
+故本轮只美化 `/do-config`（零补丁、零风险），并把「① 开放 overlay 扩展点 ② 支持鼠标」作为需求提给上游，**不擅自改 TUI 的 `/config` 面板**。
+
+### 复测
+
+- `pnpm build`：Host 与 Client 双目标干净。
+- `node --test test/*.test.mjs`：**211 用例 / 187 通过 / 0 失败 / 24 跳过**（本轮 +1 条，即上面的活引用解包回归测试）。
+- 真实 TUI（容器 `dsh-env` / profile `tui` = dsh 0.1.0-rc.8 + tui 0.1.1-rc.6）：盒子是矩形、值列唯一、ANSI 透传、13 个字段全部显示真值。
+
+**复现脚本**
+
+| 脚本 | 用途 |
+| --- | --- |
+| `test-docker/capture-do-config.sh` | 真实 PTY 跑 TUI、敲 `/do-config`，剥 ANSI 出「用户看到的样子」，并统计 `ESC[1m`/`ESC[2m` 证明 ANSI 真的透传（本轮界面与真值验收就是它） |
+| `test-docker/capture-config-panel.sh` | 同样方式抓 TUI 内置 `/config` 面板，用来证明它**只读**（没有选择、没有键盘导航、不调 `permission.set`），故本轮不动它 |
+| `scripts/verify-tui-registration.mjs` | 用**已安装的真实 TUI 包**导出的 `SlashCommandRegistry` 验证 `/do-config` 与 `/loop` 真能注册进去 —— 第三方包不在本仓库依赖里，这一环装不进 `node --test` |
+
+
+### 边界（勿过度声称）
+
+- 美化只在 **0.1.x 真实 TUI** 上肉眼验收过；0.2.x 的 TUI 组合未跑本轮界面。
+- 「活引用解包」的修复对 0.2.x 是**恒等操作**（那里 `plainSettings` 本来就在用），但 0.2.x 的 `/do-config` 本轮未重跑。
+- 容器里探针用的 `settings.yaml`（含 `dsh-do: defaultMaxRounds: 25`）是**测试产物**，验完已随容器恢复清掉。
+
 

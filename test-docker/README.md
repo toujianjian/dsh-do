@@ -36,6 +36,17 @@ docker exec dsh-env cat /tmp/out.txt
 | `verify-loop-section.sh` | 驱动 `/loop <目标>` + `/status`，抓 `◆ 循环` 段 |
 | `extract-tui.sh` | 从录制里剥 ANSI 并抽取指定上下文（默认抓上次的 `tui-out.raw`） |
 | `vercmp.mjs` | 打印某目录下指定包的解析版本；对 hmr 额外检查有没有 `registerConfig` |
+| `probe-env.sh` | 环境探针：各 profile 的版本组合、dsh-do 产物哈希、凭证现状、TUI 补丁状态 |
+| `prepare-tui-test.sh` | 跑 tui profile 前的准备：备份并清除凭证、把全局 CLI 切到 `0.1.0-rc.8` |
+| `mock-llm.mjs` | 本地 DeepSeek 兼容 SSE mock，按请求体里的轮次决定回复（第 3 轮回 `loop_done`） |
+| `mock-patch.yml` | 把 `llm-deepseek` 的 baseURL 指到 mock（走 `--patch` 叠加，不动 profile 本体） |
+| `mock-selftest.sh` | mock 自检：健康检查、普通请求、第 3 轮（应回 `loop_done`）、收尾请求——跑 4 分钟验收前先过这一关 |
+| `mock-llm-fallback.mjs` | 模型自动切换专用的 mock：**主模型一律 429、其它模型 200**，200 的回复里自报模型名 |
+| `mock-fallback-patch.yml` | 打开 `modelFallback` 的覆盖层（候选 `deepseek-official/deepseek-v4-pro`） |
+| `verify-model-fallback.sh` | **模型自动切换验收**：对照组（开关关，应报错）＋ 实验组（开关开，应切换） |
+| `verify-loop-multiround.sh` | **真实多轮循环验收**：TUI 里 `/loop 1m <目标>`，靠 mock 跑到第 3 轮由 `loop_done` 收尾 |
+| `dump-loop-evidence.sh` / `decode-session-frames.sh` | 落盘证据：检查点、会话日志（多帧 zstd 必须逐帧解码，见下） |
+| `restore-container.sh` | 把为测试改动过的容器恢复原样（凭证文件、全局 CLI 版本） |
 
 **跑 TUI 前先断网**，否则 TUI 会自我升级到 latest 把环境弄坏：
 
@@ -46,6 +57,58 @@ docker network connect bridge dsh-env
 ```
 
 TUI 用 `script -q -c "stty rows 50 cols 130; dsh --profile tui" <录制文件>` 起，输入经 `mkfifo` 喂进去；`stty` 那步是为了让面板拿到足够宽的行宽。
+
+## 真实多轮循环（mock LLM，2026-10-04）
+
+容器没有真实凭证，循环第 1 轮就会因 `llm-deepseek: no API key` 报错暂停——「一轮轮跑下去」和 `loop_done` 收尾永远测不到。真实凭证会烧额度，而且容器必须联网，联网又会让 TUI 自我升级把 profile 弄坏。
+
+解法：**把 provider 的 baseURL 指到容器内的 mock**。mock 跑在 localhost，所以容器可以一直断网。
+
+```sh
+# 1) 准备：清凭证（rc.8 要求 version 是字符串，0.2.0 写的数字会打掉 profile 启动）+ 切全局 CLI
+docker exec dsh-env bash /root/prepare-tui-test.sh
+
+# 2) 断网（防自我升级），跑多轮验收
+docker network disconnect bridge dsh-env
+docker exec dsh-env bash /root/verify-loop-multiround.sh
+
+# 3) 恢复
+docker network connect bridge dsh-env
+docker exec dsh-env bash /root/restore-container.sh
+```
+
+三个关键点：
+
+1. **endpoint 走 `--patch` 覆盖层**，不改 profile 本体：`dsh --profile tui --patch /root/mock-patch.yml`，内容为 `- id: llm-deepseek` + `config.baseURL: http://127.0.0.1:8899`。
+2. **凭证用继承的环境变量**（`DEEPSEEK_API_KEY=dummy-mock-key`）。`dsh-credentials-local` 的优先级是「继承进程环境（胜出）> `$DSH_HOME/.credentials.yaml` > `cwd/.env` > `$DSH_HOME/.env`」。
+3. **轮次判定靠请求体里的 `<loop_round>`**（`renderLoopRoundPrompt` 渲染的 `Round: N/M`），所以 mock 不需要猜，也不用数请求（会话标题生成会插进来干扰）。
+
+mock 的 wire 契约（照 `dsh-llm-deepseek` 实现写）：`POST {baseURL}/chat/completions`，`stream: true`，SSE 每行 `data: {...}`、末行 `data: [DONE]`；chunk 形如 `{choices:[{delta:{content|tool_calls},finish_reason}]}`；`finish_reason` 只认 `stop` / `tool_calls` / `length`。
+
+**TUI 最短节奏是 1 分钟**（`MIN_INTERVAL_MS = 60000`，写 `30s` 会被抬上去），所以 3 轮约 2 分钟。
+
+### 会话日志是多帧 zstd（重要）
+
+`session.jsonl.zstd` 每次 append 写**一个独立 zstd 帧**。Node 的 `zstdDecompressSync` 和 `createZstdDecompress` **都只解第一帧**，直接整文件解压只会得到 1 个事件（那个 session 头），极易误判成「日志是空的 / 格式变了」。正确做法：按 magic `28 B5 2F FD` 切帧后逐帧解压——见 `decode-session-frames.sh`。
+
+## 模型自动切换（对照实验，2026-10-04）
+
+验 `modelFallback`：同一个 mock 让**主模型一律 429、其它模型 200**，两组之间唯一变量是开关。
+
+```sh
+docker exec dsh-env bash /root/prepare-tui-test.sh
+docker network disconnect bridge dsh-env
+docker exec dsh-env bash /root/verify-model-fallback.sh   # 对照组 + 实验组，约 3 分钟
+docker network connect bridge dsh-env
+docker exec dsh-env bash /root/restore-container.sh
+```
+
+要点：
+
+1. **429 响应体别带 quota 字样**。provider 的 `httpErrorCode()` 会把 `[error.code, error.type, error.message]` 拼起来**先**判 `isQuotaExceededError()`，命中就变成 QUOTA 码，RATE_LIMIT 路径就测不到了。
+2. **要等官方重试跑完**。`RATE_LIMIT` 是可重试码，`dsh-llm-retry` 默认 `maxRetries=5`、初始 500ms 指数退避（0.5+1+2+4+8 ≈ 15.5s），dsh-do 只在它放弃后才切换。所以脚本里单轮要留够 ~40s。
+3. **让回复自报模型名**。切换是请求层的，TUI 状态栏仍显示会话选的模型；把模型名写进 200 的回复文本，界面就成了证据。
+4. **一定要有对照组**。只跑实验组证明不了是 fallback 起作用。
 
 ## 踩过的坑（都是环境问题，不是本插件的缺陷）
 
