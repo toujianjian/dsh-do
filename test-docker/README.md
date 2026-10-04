@@ -35,6 +35,9 @@ docker exec dsh-env cat /tmp/out.txt
 | `drive-tui.sh` | 驱动 `/do-config`（`/do-config` 验收的录制） |
 | `verify-loop-section.sh` | 驱动 `/loop <目标>` + `/status`，抓 `◆ 循环` 段 |
 | `extract-tui.sh` | 从录制里剥 ANSI 并抽取指定上下文（默认抓上次的 `tui-out.raw`） |
+| `capture-do-config.sh [profile]` | 真实 PTY 里敲 `/do-config` 抓渲染：剥 ANSI 出"用户看到的样子"，并统计 `ESC[1m`/`ESC[2m` 证明 ANSI 属性真的透传。默认 profile `tui`（0.1.0-rc.8），可传 `v020`（0.2.0-rc.2）；会先按一次 Esc 关掉新版 TUI 的首启 API Key 模态 |
+| `capture-config-panel.sh` | 同样方式抓 TUI 内置 `/config` 面板——用于证明它**只读**（无选择、无键盘导航、不调 `permission.set`），故插件不改它 |
+| `raw-sgr.mjs <raw 文件> [锚点]` | 只看**锚点附近**的原始字节，把 ESC 显式标成 `<ESC>` 并统计该区域 SGR。**全文 SGR 计数不可用**——它被 TUI 自己的界面样式主导（状态栏/提示行/补全列表都在用 bold/dim），必须按区域看才能判断插件发出的样式有没有被 TUI 吞掉 |
 | `vercmp.mjs` | 打印某目录下指定包的解析版本；对 hmr 额外检查有没有 `registerConfig` |
 | `probe-env.sh` | 环境探针：各 profile 的版本组合、dsh-do 产物哈希、凭证现状、TUI 补丁状态 |
 | `prepare-tui-test.sh` | 跑 tui profile 前的准备：备份并清除凭证、把全局 CLI 切到 `0.1.0-rc.8` |
@@ -117,6 +120,8 @@ docker exec dsh-env bash /root/restore-container.sh
 3. **全新 profile 起不来**：pnpm 解析出 `cordis-plugin-hmr@1.0.19`，该版本没有 `registerConfig`，而 dsh 0.1.0-rc.8 需要它 → 用 `overrides` 钉回 `1.0.17`。
 4. **TUI 自我升级**：`dsh-tianshu-tui` 会把自己升到 npm latest（`1.0.0-rc.2`），而它跟 rc.8 不兼容，升完 profile 直接起不来。`overrides` + 断网双保险。
 5. **不要用 `docker exec ... bash -c '<多语句>'`**：PowerShell 传参会把引号/转义弄坏，实测多次返回空输出、甚至把 `package.json` 写成残缺内容。一律用脚本文件 + `docker cp`。
+6. **profile 里的 dsh-do 是旧 tarball → 被版本闸门静默跳过**（0.2.x 上尤其坑）：`dsh --profile v020 --dump-config` 会打 `skipping profile bundle "dsh-do"`，但 TUI 照常起得来，只是 `/do-config` 与 `/loop` 一起消失；又因为命令没注册，敲 `/do-config` 会被当成普通消息发给模型（看到「⠋ 理解」+ API 报错），极像"命令坏了"。**换构建后必须重装**（`dsh plugin --profile v020 add <新 tarball>`），只 `docker cp` 一个 `lib/index.js` 是不够的——`package.json` 的 `peerDependencies` 决定闸门放不放行。
+7. **全局 CLI 版本要和 profile 对齐**：全局 `dsh` 是 0.2.0-rc.2 时跑 0.1.0-rc.8 的 `tui` profile，闸门会把该 profile 的插件行**全部禁用**（`disabling profile plugin row …`），profile 直接起不来。跑 0.1.x profile 前先用 `prepare-tui-test.sh` 把 CLI 切到 `0.1.0-rc.8`，跑完用 `restore-container.sh` 切回。
 
 ## 这一环境抓到的问题
 

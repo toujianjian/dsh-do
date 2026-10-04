@@ -583,25 +583,65 @@ seq=55  assistant/message "循环已完成：mock 在第 3 轮调用 loop_done �
 
 故本轮只美化 `/do-config`（零补丁、零风险），并把「① 开放 overlay 扩展点 ② 支持鼠标」作为需求提给上游，**不擅自改 TUI 的 `/config` 面板**。
 
+### 4）0.2.0-rc.2 上的复验（同一份代码，输出逐字节相同）
+
+初版报告把「0.2.x 的 TUI 组合本轮未跑界面」列为边界。补验后发现**这里根本没有版本差异**——美化是 `renderConfigListing` 的事，与 dsh 代数无关。
+
+真实组合：容器 profile `v020` = dsh **0.2.0-rc.2** + `@huiliyi37/dsh-tianshu-tui` **1.0.0-rc.2**，装**同一份**构建后跑 `/do-config`。从 0.1.x 与 0.2.0 两次抓取里各抽出 22 行列表（盒子 4 行 + 4 个分组头 + 13 个字段行 + 页脚）逐行 diff：
+
+```
+6c6
+<    defaultMaxRounds                25
+---
+>    defaultMaxRounds                20
+```
+
+**只差一行**，且差的不是渲染：`25` 是 0.1.x 那次测试时我造进 `settings.yaml` 的覆盖值，`20` 是 v020 没有覆盖时的 schema 默认值。盒子、四个分组头、其余 12 个字段行、页脚**逐字节相同**。
+
+**样式（粗体/暗色）也逐字节相同**，这条单独查过，因为差点被一个假象带偏：整份录制里的 `ESC[1m`/`ESC[2m` 计数在三次抓取里是 22/21、10/0、29/27 —— 数字对不上源码期望的 18/18。原因是**全文计数被 TUI 自己的界面样式主导**（状态栏、提示行、补全列表都在用 bold/dim），而且第一次抓取时 API Key 模态还没关掉、列表压根没渲染完（那次的 `dim: 0` 就是这么来的，不是 TUI 吞了样式）。
+
+改用 `test-docker/raw-sgr.mjs` 只看**列表区域**的原始字节后，结论明确：
+
+```
+<ESC>[1m◆ 循环<ESC>[0m<ESC>[2m · 每轮推进与检查点<ESC>[0m
+   <ESC>[2mdefaultMaxRounds<ESC>[0m                <ESC>[1m20<ESC>[0m
+```
+
+组标题 `ESC[1m`（粗体）、组说明 `ESC[2m`（暗色）、路径暗色、值粗体——**四种样式在 0.2.0 上一个不少**。
+
+（顺带解释了抓取里列表被输入框"切开"的现象：TUI 每 commit 一行就重绘一次自己的框，用 `ESC[11A` + `ESC[0J` 就地覆盖。剥 ANSI 时把光标定位一起剥掉了，于是重绘帧被摊平成独立行；真实终端里看到的是连续列表。）
+
+**补验时先踩到的坑（真实用户会踩，已写进 README）**：`v020` 里装的是 peer 范围放宽**之前**的旧 tarball，于是 dsh 的版本闸门把 dsh-do 整个跳过：
+
+```
+dsh: skipping profile bundle "dsh-do": Plugin dsh-do@0.1.0 is incompatible with dsh 0.2.0-rc.2:
+peerDependencies {"@deepseek-ai/dsh-agent":"^0.1.0-rc.6", …}
+```
+
+症状极具误导性：**dsh 自身一切正常，只是 `/do-config` 与 `/loop` 一起消失**；又因为命令没注册，在 TUI 里敲 `/do-config` 会被当成**普通消息发给模型**（抓取里能看到「⠋ 理解」和随后的 API 报错），看起来像"命令坏了"，而不像"插件压根没装载"。重装（`dsh plugin --profile v020 add <新 tarball>`）后 `--dump-config` 里 `skipping profile bundle` 归 0、dsh-do 进组合，`/do-config` 立刻恢复且就是美化版。**插件侧无需改动**（peer 范围早已放宽），这是安装陈旧导致的，故只补文档。
+
 ### 复测
 
 - `pnpm build`：Host 与 Client 双目标干净。
 - `node --test test/*.test.mjs`：**211 用例 / 187 通过 / 0 失败 / 24 跳过**（本轮 +1 条，即上面的活引用解包回归测试）。
-- 真实 TUI（容器 `dsh-env` / profile `tui` = dsh 0.1.0-rc.8 + tui 0.1.1-rc.6）：盒子是矩形、值列唯一、ANSI 透传、13 个字段全部显示真值。
+- 真实 TUI（容器 `dsh-env` / profile `tui` = dsh 0.1.0-rc.8 + tui 0.1.1-rc.6）：盒子是矩形、值列唯一、13 个字段全部显示真值。
+- 真实 TUI（容器 `dsh-env` / profile `v020` = dsh 0.2.0-rc.2 + tui 1.0.0-rc.2）：同一份构建，列表与 0.1.x **逐字节相同**（含粗体/暗色，见第 4 节）。
 
 **复现脚本**
 
 | 脚本 | 用途 |
 | --- | --- |
-| `test-docker/capture-do-config.sh` | 真实 PTY 跑 TUI、敲 `/do-config`，剥 ANSI 出「用户看到的样子」，并统计 `ESC[1m`/`ESC[2m` 证明 ANSI 真的透传（本轮界面与真值验收就是它） |
+| `test-docker/capture-do-config.sh [profile]` | 真实 PTY 跑 TUI、敲 `/do-config`，剥 ANSI 出「用户看到的样子」（本轮界面与真值验收就是它）。默认 profile `tui`，可传 `v020` |
+| `test-docker/raw-sgr.mjs <raw> [锚点]` | 只看锚点附近的原始字节，判断插件发出的样式有没有被 TUI 吞掉。**全文 SGR 计数不可用**，原因见第 4 节 |
 | `test-docker/capture-config-panel.sh` | 同样方式抓 TUI 内置 `/config` 面板，用来证明它**只读**（没有选择、没有键盘导航、不调 `permission.set`），故本轮不动它 |
 | `scripts/verify-tui-registration.mjs` | 用**已安装的真实 TUI 包**导出的 `SlashCommandRegistry` 验证 `/do-config` 与 `/loop` 真能注册进去 —— 第三方包不在本仓库依赖里，这一环装不进 `node --test` |
 
-
 ### 边界（勿过度声称）
 
-- 美化只在 **0.1.x 真实 TUI** 上肉眼验收过；0.2.x 的 TUI 组合未跑本轮界面。
-- 「活引用解包」的修复对 0.2.x 是**恒等操作**（那里 `plainSettings` 本来就在用），但 0.2.x 的 `/do-config` 本轮未重跑。
-- 容器里探针用的 `settings.yaml`（含 `dsh-do: defaultMaxRounds: 25`）是**测试产物**，验完已随容器恢复清掉。
+- 美化已在 **0.1.x 与 0.2.x 两侧真实 TUI** 上验收，且两侧输出逐字节相同（见上）。
+- 0.2.x 那侧**只验了展示与命令注册**；`/do-config` 的**写入**（`set`/`reset`）在 0.2.x 上未跑——0.2.x 的写入走 profile patch，平台侧另有已知阻塞（`500 root Include entry`，见第九轮）。
+- 鼠标仍不可用（见第 3 节），与版本无关。
+- 容器里 0.1.x 探针用的 `settings.yaml`（含 `dsh-do: defaultMaxRounds: 25`）是**测试产物**，已随容器恢复清掉；上面 diff 里那一行差异就是它。
+
 
 

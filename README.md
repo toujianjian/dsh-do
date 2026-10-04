@@ -253,6 +253,7 @@ dsh --profile tui --dump-config   # 应看到唯一的 `id: do` 行与 `id: tui-
 
 - **会话日志读取**：DSH 0.1.5-rc.3 移除了 `Session.events` getter，改为 `snapshotEvents()`（整段日志）与 `ownEvents()`（排除 fork 继承前缀）。`src/session-log.ts` 按能力探测并回退，一份构建同时服务新旧两代。
 - **peer 范围**：`^0.1.0-rc.6 || ^0.2.0-rc.1`。dsh 0.2.x 有版本闸门，范围不覆盖就会被**拒绝装载**（`skipping profile bundle "dsh-do"`），不是崩溃。
+  **升级提醒**：如果你在 peer 范围放宽**之前**装过 dsh-do，把 dsh 升到 0.2.x 后插件会被**静默跳过**——症状是 `/do-config`、`/loop` 一起消失（在 TUI 里敲 `/do-config` 会被当成普通消息发给模型，看起来像命令坏了），而 dsh 自身一切正常。重装一次即可：`dsh plugin --profile <profile 名> add <dsh-do 的 tarball 或包名>`；装完 `dsh --profile <profile 名> --dump-config` 里搜 `skipping profile bundle` 应为 0 条。
 - **TUI 状态栏补丁**：同时支持 `projectStatusPanel(...)` 的单行与跨行展开两种调用形状；形状再变时明确失败且不写文件。
 
 **Windows 黑窗**：上游 `dsh-subprocess-local` 从 0.1.5-rc.3 起才在 spawn 处带 `windowsHide`。停留在 0.1.0-rc.8 时子进程会闪黑窗，升级即消失——这一层不在本插件内。
