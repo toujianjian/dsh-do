@@ -51,7 +51,7 @@ test('successful installation mounts preset and queues one plugin notice', async
     assert.equal(response.status, 200)
     assert.match(response.body.sessionId, /^dsh-do-install-/)
     assert.equal(mounted, 1)
-    assert.equal(queued.source.kind, 'plugin')
+    assert.equal(queued.source.kind, 'dsh-do')
     assert.equal(deleted, false)
     assert.equal((await readdir(join(home, 'dsh-do-installs'))).length, 1)
   } finally {

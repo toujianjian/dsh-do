@@ -6,7 +6,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage, HarnessError } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool, type GenericCallView } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
@@ -14,6 +14,7 @@ import type { LoopController } from './controller.js'
 import { effectiveRounds, isLoopSource, type LoopState } from './loop.js'
 import { renderLoopWrapupContext } from './prompt.js'
 import { readSessionEvents } from './session-log.js'
+import { doNoticeSource } from './source.js'
 
 /** Execution-time authority checks for the model-facing loop tools. */
 
@@ -271,12 +272,7 @@ export function registerLoopTools(ctx: Context, controller: LoopController, conf
 								kind: 'completed',
 								...(args.summary === undefined ? {} : { summary: args.summary }),
 							}),
-							source: {
-								kind: 'plugin',
-								plugin: 'dsh-do',
-								form: 'notice',
-								summary: boundContextSummary(`loop_done: ${loop.objective}`),
-							},
+							source: doNoticeSource(`loop_done: ${loop.objective}`),
 						}),
 					)
 				}
@@ -311,12 +307,7 @@ export function registerLoopTools(ctx: Context, controller: LoopController, conf
 								kind: 'cancelled',
 								...(args.reason === undefined ? {} : { reason: args.reason }),
 							}),
-							source: {
-								kind: 'plugin',
-								plugin: 'dsh-do',
-								form: 'notice',
-								summary: boundContextSummary(`loop_cancel: ${loop.objective}`),
-							},
+							source: doNoticeSource(`loop_cancel: ${loop.objective}`),
 						}),
 					)
 				}

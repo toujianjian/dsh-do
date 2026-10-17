@@ -4,6 +4,7 @@ import { Inbox } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { installLoopDriver } from '../lib/types/driver.js'
 import { LoopController } from '../lib/types/controller.js'
+import { isDoSource } from '../lib/types/source.js'
 
 const human = (text = 'Please handle this first') => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const deferred = () => {
@@ -48,7 +49,7 @@ async function harness(t, { maxRounds = 3, initialMessages = [], restore, interv
 			// satisfied by the human's own message.
 			const kind = message.source?.kind
 			if (kind === 'loop') queued.push(message)
-			else if (kind === 'plugin') notices.push(message)
+			else if (isDoSource(message.source)) notices.push(message)
 			else human$1.push(message)
 			this.inbox.append('next-turn', message)
 			status('running')
@@ -372,7 +373,7 @@ test('dispose does not cancel unrelated human activity when no round is owned', 
 	assert.equal(h.agent.inbox.nextTurn.length, 2)
 	assert.equal(h.notices.length, 1)
 	assert.equal(h.loop().pausedReason.code, 'restart')
-	assert.equal(h.agent.inbox.nextTurn.filter((message) => message.source?.kind !== 'plugin').length, 1)
+	assert.equal(h.agent.inbox.nextTurn.filter((message) => !isDoSource(message.source)).length, 1)
 })
 
 test('cancellation while awaiting pre-step restores context and disarms at idle', async (t) => {

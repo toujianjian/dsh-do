@@ -12,17 +12,15 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { LoopController } from './controller.js'
 import { effectiveRounds, isLoopSource, MAX_TIMER_DELAY_MS, type LoopMessageSource, type LoopPauseReason, type LoopState } from './loop.js'
 import { renderLoopPauseNotice, renderLoopRoundPrompt } from './prompt.js'
 import { decideAutoContinue, describeAutoContinueStop, renderAutoContinuePrompt } from './auto-continue.js'
+import { doNoticeSource } from './source.js'
 import type { AutoContinueSettings } from './settings.js'
-
-/** Source stamped on the driver's own notices, matching the detector's. */
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-do' } as const
 
 /** One queued/claimed/admitted round reservation owned by the driver. */
 interface Attempt {
@@ -158,7 +156,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 			state.agent.followup(
 				createUserMessage({
 					content: renderLoopPauseNotice(reason),
-					source: { ...PLUGIN_SOURCE, form: 'notice', summary: boundContextSummary(`dsh-do loop paused: ${reason.code}`) },
+					source: doNoticeSource(`dsh-do loop paused: ${reason.code}`),
 				}),
 			)
 		} catch (error) {
@@ -388,11 +386,7 @@ export function installLoopDriver(ctx: Context, controller: LoopController, rest
 							state.agent.followup(
 								createUserMessage({
 									content: renderAutoContinuePrompt(decision.attempt, policy.maxContinuations),
-									source: {
-										...PLUGIN_SOURCE,
-										form: 'notice',
-										summary: boundContextSummary(`dsh-do output limit: continue ${decision.attempt}/${policy.maxContinuations}`),
-									},
+									source: doNoticeSource(`dsh-do output limit: continue ${decision.attempt}/${policy.maxContinuations}`),
 								}),
 							)
 							state.continueStreak = decision.attempt

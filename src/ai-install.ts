@@ -11,9 +11,10 @@ import { mkdir, rmdir } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
+import { doNoticeSource } from './source.js'
 
 /** Route and body budget for the bridge. */
 export const AI_INSTALL_PATH = '/dsh-do/ai-install'
@@ -219,12 +220,7 @@ export function installAiInstallRoute(ctx: Context): void {
             disposeAgent = () => handle.dispose()
             handle.agent.followup(createUserMessage({
               content: [{ type: 'text', text: prompt }],
-              source: {
-                kind: 'plugin',
-                plugin: 'dsh-do',
-                form: 'notice',
-                summary: boundContextSummary(`AI install: ${prompt.slice(0, 60)}`),
-              },
+              source: doNoticeSource(`AI install: ${prompt.slice(0, 60)}`),
             }))
             // Once queued, the installation session and workspace are durable
             // user-visible results, not resources to roll back on HTTP failure.

@@ -22,13 +22,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the `ctx.compaction` Context augmentation without adding a
 // runtime import to the Host bundle.
 import type {} from '@deepseek-ai/dsh-compaction'
-import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
+import { doNoticeSource } from './source.js'
 import type { LoopDetectionSettings } from './settings.js'
-
-/** The source stamped on every message this module injects. */
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-do' } as const
 
 /** Longest quoted argument preview in a model-visible notice. */
 const ARGUMENTS_PREVIEW_CHARS = 500
@@ -216,11 +214,7 @@ export function installLoopDetection(ctx: Context, options: LoopDetectionOptions
 				agent.followup(
 					createUserMessage({
 						content: renderRecoveryPrompt(name, count, compacted),
-						source: {
-							...PLUGIN_SOURCE,
-							form: 'notice',
-							summary: boundContextSummary(`dsh-do loop recovery: ${name} × ${count}`),
-						},
+						source: doNoticeSource(`dsh-do loop recovery: ${name} × ${count}`),
 					}),
 				)
 			} catch (error) {
@@ -248,7 +242,7 @@ export function installLoopDetection(ctx: Context, options: LoopDetectionOptions
 					}
 					const notice: UserMessage = createUserMessage({
 						content: renderLoopNotice(verdict.name, verdict.count, canonical),
-						source: { ...PLUGIN_SOURCE, form: 'notice', summary: boundContextSummary(`dsh-do repeated call: ${verdict.name} × ${verdict.count}`) },
+						source: doNoticeSource(`dsh-do repeated call: ${verdict.name} × ${verdict.count}`),
 					})
 					return { ...downstream, additionalContexts: [notice, ...(downstream.additionalContexts ?? [])] }
 				}),

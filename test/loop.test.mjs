@@ -73,7 +73,7 @@ test('effectiveRounds falls back to the checkpoint hint without a live agent', (
 test('isLoopSource narrows loop sources only', () => {
 	assert.equal(isLoopSource({ kind: 'loop', loopId: 'l', round: 1 }), true)
 	assert.equal(isLoopSource({ kind: 'user' }), false)
-	assert.equal(isLoopSource({ kind: 'plugin', plugin: 'x' }), false)
+	assert.equal(isLoopSource({ kind: 'dsh-do' }), false)
 	assert.equal(isLoopSource(undefined), false)
 	assert.equal(isLoopSource(null), false)
 	assert.equal(isLoopSource('loop'), false)
