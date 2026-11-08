@@ -130,6 +130,96 @@ test('LoopStore keeps the newest record per session across loop replacements', a
 	}
 })
 
+// A damaged record must never cost another session its loop. `version` is the
+// one field whose diagnostic coerced the parsed value with `String()`, so
+// `{"toString": null}` threw a TypeError *out of* the tolerant parser and out of
+// `LoopStore.load()`, which silently discarded every healthy checkpoint.
+test('a checkpoint whose version cannot be stringified is skipped, not thrown', async () => {
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
+	try {
+		const { writeFile } = await import('node:fs/promises')
+		const healthy = createLoop({ sessionId: 'healthy', objective: 'keep working', maxRounds: 2 })
+		const errors = []
+		const store = new LoopStore(root, { onError: (message) => errors.push(message) })
+		await store.write(healthy)
+		await writeFile(join(root, 'loop-poison.json'), '{"version":{"toString":null},"loop":{}}')
+		const loaded = await store.load()
+		assert.deepEqual([...loaded.keys()], ['healthy'])
+		assert.equal(errors.length, 1)
+		assert.match(errors[0], /loop-poison\.json/)
+		// The diagnostic itself is safe to render.
+		assert.doesNotMatch(errors[0], /\[object/)
+	} finally {
+		await rm(root, { recursive: true, force: true })
+	}
+})
+
+test('checkpoint diagnostics describe hostile scalars without coercing them', () => {
+	// An own non-callable `toString` is what makes `String(value)` throw
+	// ("Cannot convert object to primitive value"); an accessor named
+	// `toString` would not, because the property name differs.
+	for (const [label, document, pattern] of [
+		['a poisoned version', '{"version":{"toString":null},"loop":{}}', /unsupported version an object/],
+		['a numeric-toString version', '{"version":{"toString":7},"loop":{}}', /unsupported version an object/],
+		['an array version', '{"version":[1],"loop":{}}', /unsupported version an array/],
+		['a string version', '{"version":"1","loop":{}}', /unsupported version "1"/],
+		['a poisoned phase', '{"version":1,"loop":{"id":"ok","sessionId":"s","objective":"o","maxRounds":1,"phase":{"toString":null},"armed":true,"roundsStarted":0,"startedAt":0,"updatedAt":0}}', /invalid phase/],
+		['a poisoned terminal phase', '{"version":1,"loop":{"id":"ok","sessionId":"s","objective":"o","maxRounds":1,"phase":{"toString":null},"armed":true,"roundsStarted":0,"startedAt":0,"updatedAt":0}}', /invalid phase/],
+	]) {
+		// Returning a rejection (instead of throwing) is the contract.
+		const result = parseCheckpoint(document, 'loop-test.json')
+		assert.equal(result.ok, false, label)
+		assert.match(result.ok ? '' : result.error, pattern, label)
+	}
+	// A pause recorded on a non-active, non-string phase is reported by value
+	// kind: `phase` is validated first, so this documents that ordering.
+	const armedTerminal = '{"version":1,"loop":{"id":"ok","sessionId":"s","objective":"o","maxRounds":1,"phase":"completed","armed":true,"roundsStarted":0,"startedAt":0,"updatedAt":0}}'
+	assert.match(parseCheckpoint(armedTerminal, 'loop-test.json').error ?? '', /armed "completed" phase/)
+})
+
+// Restore runs before the loop tools are registered, so a checkpoint directory
+// entry that blocks on read (a FIFO with no writer) would freeze plugin startup
+// forever. Only regular files may be opened.
+test('LoopStore ignores non-regular files instead of blocking on them', async () => {
+	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
+	try {
+		const { mkdir, writeFile, symlink } = await import('node:fs/promises')
+		const { execFile } = await import('node:child_process')
+		const { promisify } = await import('node:util')
+		const healthy = createLoop({ sessionId: 'healthy', objective: 'keep', maxRounds: 2 })
+		const errors = []
+		const store = new LoopStore(root, { onError: (message) => errors.push(message) })
+		await store.write(healthy)
+		// A directory, a symlink to a valid document elsewhere, and — where the
+		// platform has one — a FIFO: none of these is a checkpoint this store wrote.
+		await mkdir(join(root, 'loop-directory.json'))
+		await writeFile(join(root, 'elsewhere.json'), serializeCheckpoint({ ...healthy, sessionId: 'elsewhere' }))
+		// Creating a symlink needs a privilege Windows may withhold; skip it there
+		// rather than fail a correct implementation.
+		const linked = await symlink(join(root, 'elsewhere.json'), join(root, 'loop-symlink.json')).then(
+			() => true,
+			() => false,
+		)
+		const fifo = join(root, 'loop-fifo.json')
+		const madeFifo = await promisify(execFile)('mkfifo', [fifo]).then(
+			() => true,
+			() => false,
+		)
+		// A hang here is the failure mode, so the assertion is the wait itself.
+		const loaded = await Promise.race([
+			store.load(),
+			new Promise((resolve) => setTimeout(() => resolve('timeout'), 5_000)),
+		])
+		assert.notEqual(loaded, 'timeout', 'load() must not block on a non-regular checkpoint entry')
+		assert.deepEqual([...loaded.keys()], ['healthy'])
+		assert.ok(errors.some((message) => message.includes('loop-directory.json')))
+		if (linked) assert.ok(errors.some((message) => message.includes('loop-symlink.json')))
+		if (madeFifo) assert.ok(errors.some((message) => message.includes('loop-fifo.json')))
+	} finally {
+		await rm(root, { recursive: true, force: true })
+	}
+})
+
 test('malformed blockedReason cannot interrupt recovery of healthy checkpoints', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'dsh-do-'))
 	try {

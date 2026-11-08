@@ -1,5 +1,50 @@
 # 验证记录
 
+## 第十二轮（Docker 暴力测试：随机+敌意输入下修掉恢复路径两个真实缺陷）
+
+方法不是"点几下"，而是把**可达输入面**机器化：`test-docker/brute/` 下三套 Tier 1（纯函数 29,886 次调用；检查点存储的真实文件系统行为：12×60 并发写、4000 文件、畸形布局、FIFO、40 次 SIGKILL、读写竞态、符号链接、id 遍历；`readJsonBody` + 设置路由 handler 的 13 个正例与 300 次方法/头/体模糊），加一套 Tier 2（容器里起真实 web020 部署，压它自己的 `/dsh-do/settings`：250 并发读、200 次写、90 次滥用）。判据不只是"不抛异常"：**被接受的值必须落在文档化定义域内**，否则状态面板就是在说谎。
+
+完整方法与逐项结果见 `test-docker/brute/README.md`；一键复跑 `docker exec dsh-env bash /root/brute/run-all.sh`。
+
+### 缺陷 1（中）：一个畸形检查点让**所有**循环都无法恢复
+
+`parseCheckpoint` 的诊断把未信任值交给 `String()`：
+
+```ts
+if (version !== 1) return { ok: false, error: `... unsupported version ${String(version)}` }   // 旧代码
+```
+
+当 `version` 带一个**非函数的自有 `toString`**（`{"toString":null}` / `{"toString":7}`）时，`String()` 抛 `TypeError`，逃出 `parseCheckpoint` → 逃出 `LoopStore.load()`（那里没有 try）→ `restore()` 只打一条 warn，**其余健康检查点一个都不恢复**。所有 armed 循环重启后静默停摆。
+
+一个容易搞错的细节：`{"toString": …}` 只遮蔽同名属性，**同名 accessor 不会**触发（属性名不同）；真正致命的是"值不是函数"。
+
+**修复**：新增 `describeValue()`，只回显 JSON 标量、对象/数组只报种类，**永不触发用户态转换**；三处 `String()` 全部替换。同时在 `load()` 里把 `parseCheckpoint` 包进 try/catch 兜底——解析器以后再出任何意外也只丢那一个文件。
+
+### 缺陷 2（中低）：检查点目录里的 FIFO 让恢复永久挂起
+
+`load()` 不判类型直接 `readFile`：无写端的 FIFO 永不返回（`/dev/zero` 会无限读），而 `await restore` 排在注册 `/loop` 与循环工具**之前**，于是插件"静默半死"——进程活着，命令全没了。同一根因下，一个超大假文件会被整个读进内存。
+
+**修复**：读前 `lstat`（不跟随链接），只接受 `isFile()`。符号链接也拒——它不是本 store 写的，写穿过去还会落到目录外。
+
+### 复测
+
+- `node --test test/*.test.mjs`：**219 用例 / 194 通过 / 0 失败 / 25 跳过**（跳过的是真实组合层，容器里跑）。本轮 +4 条：`a checkpoint whose version cannot be stringified is skipped, not thrown`、`checkpoint diagnostics describe hostile scalars without coercing them`、`LoopStore ignores non-regular files instead of blocking on them`（Windows 上符号链接/`mkfifo` 不可用时自动跳过），另有一条 `armed terminal phase` 具体化断言。
+- `repro-poison.mjs` 从"load() 抛错、丢光全部检查点"变为"`unsupported version an object` + 返回 1 个循环"。
+- 暴力套件：`run-store` / `run-http` 由 fail 转 **ok=true**；`web-load`（真实 web020）**ok=true**，250 并发读 250×200，90 次滥用后服务仍正常、设置段未被改动。
+
+### 仍未修（低危，留给用户定夺）
+
+1. **`canonicalizeArguments` 深嵌套栈溢出**：`sortJsonValue` 递归，5000 层即 `RangeError`；而 `JSON.parse` 可解析到 12000 层，故该输入在模型侧可达。出现在工具钩子里，会让一次调用抛错而不是退化为"不检测"。
+2. **canonical 化对极少数畸形键不幂等**：1500 个敌意值中 2 个满足 `canonicalize(parse(canonicalize(v))) ≠ canonicalize(v)`，后果是重复调用漏检。见证已保存（`test-docker/brute/hunt-canonical.mjs`），尚未最小化到能定根因的形状。
+
+### 顺带记录的边界
+
+- 0.2.0-rc.2 的真实 web 部署上，**设置写入整体被宿主拒绝**（`500 dsh: profile reload requires the root Include entry`，见第九轮）。不是本插件缺陷，但意味着那条部署上设置"能读不能存"，revision 围栏/409 生成路径走不到。
+- 该部署里 dsh-do 的设置段名实际是 **`do`**，而路由的 `READ_NAMESPACES` 白名单写的是 `dsh-do`；这段能出现在 GET 里靠的是 `isDoSection()` 形状兜底。建议对齐（或断言 `settingsNamespace()` 的真实取值），否则形状一变这段会静默消失。
+- `lib/types/*.js`（未打包产物）依赖 rc.6 的 `@deepseek-ai/dsh-settings` 导出（`deepEqualJson` 等），0.2.0-rc.2 已无这些符号；发布的 `lib/index.js` 是自包含 bundle 所以不受影响，但**任何按目录深导入内部模块的代码**都必须配 rc.6。套件的搭法见 `test-docker/brute/setup-nm.sh`。
+- SIGKILL 打断原子写会残留 `.tmp`（实测每次最多 1 个）；`load()` 忽略但从不清理。
+
+
 ## 第八轮（重试配置的真实读写语义：用真 schema 验证，推翻我自己的三条假设）
 
 目标 (a)：`llm-pi-ai` 嵌套 `retryPolicy` 的真实读写。新增 `test/retry-policy-real.test.mjs`（8 条真实依赖用例），把真实服务的 `settings` 与**真实的 `RetryPolicySchema`**（从运行时 `@deepseek-ai/dsh-llm` 导入，非手写）组合起来。

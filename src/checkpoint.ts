@@ -7,7 +7,7 @@
  * @module dsh-do/checkpoint
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, lstat, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { LoopPauseReasonCode, LoopPhase, LoopState } from './loop.js'
 import { MAX_TIMER_DELAY_MS } from './loop.js'
@@ -29,6 +29,28 @@ export function serializeCheckpoint(loop: LoopState): string {
 
 const PHASES: readonly LoopPhase[] = ['active', 'completed', 'blocked', 'cancelled']
 
+/**
+ * Render an untrusted JSON value for a diagnostic without trusting it.
+ *
+ * `String(value)` runs a coercion that a parsed document controls
+ * (`{"toString": null}` throws a TypeError), and a throwing diagnostic would
+ * escape the tolerant parser and abort the whole restore. Only the JSON scalar
+ * domain is echoed; objects and arrays are described by kind instead, because
+ * their exact shape is rarely the point of the message and can be arbitrarily
+ * large.
+ *
+ * @param value - a value read out of a parsed checkpoint document.
+ * @returns a short, safe description.
+ */
+function describeValue(value: unknown): string {
+	if (typeof value === 'string') return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)
+	if (typeof value === 'number') return Object.is(value, -0) ? '-0' : String(value)
+	if (typeof value === 'boolean') return String(value)
+	if (value === null) return 'null'
+	if (Array.isArray(value)) return 'an array'
+	return typeof value === 'object' ? 'an object' : typeof value
+}
+
 /** Accepted pause causes; a record naming another one is corrupt. */
 const PAUSE_CODES: readonly LoopPauseReasonCode[] = ['round-cancelled', 'round-aborted', 'max-tokens', 'agent-error', 'driver-failed', 'restart']
 
@@ -47,7 +69,7 @@ export function parseCheckpoint(
 		return { ok: false, error: `file ${fileName} is not a JSON object` }
 	}
 	const { version, loop } = document as { version?: unknown; loop?: unknown }
-	if (version !== 1) return { ok: false, error: `file ${fileName} has unsupported version ${String(version)}` }
+	if (version !== 1) return { ok: false, error: `file ${fileName} has unsupported version ${describeValue(version)}` }
 	if (typeof loop !== 'object' || loop === null) return { ok: false, error: `file ${fileName} has no loop record` }
 	const state = loop as Record<string, unknown>
 	if (typeof state.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(state.id) || typeof state.sessionId !== 'string' || state.sessionId.length === 0 || typeof state.objective !== 'string') {
@@ -88,7 +110,7 @@ export function parseCheckpoint(
 			return { ok: false, error: `file ${fileName} has an invalid pausedReason` }
 		}
 		if (state.armed === true) return { ok: false, error: `file ${fileName} records a pause while armed` }
-		if (state.phase !== 'active') return { ok: false, error: `file ${fileName} records a pause on a ${String(state.phase)} phase` }
+		if (state.phase !== 'active') return { ok: false, error: `file ${fileName} records a pause on a ${describeValue(state.phase)} phase` }
 	}
 	// Optional payloads are either a string or absent; a wrong type is a corrupt
 	// record, not a value to silently drop. Accepting it would let a damaged file
@@ -102,7 +124,7 @@ export function parseCheckpoint(
 	// revoked it. A record claiming both would make loop_status report an armed
 	// completed loop and mislead the model's next decision.
 	if (state.phase !== 'active' && state.armed === true) {
-		return { ok: false, error: `file ${fileName} has an armed ${String(state.phase)} phase` }
+		return { ok: false, error: `file ${fileName} has an armed ${describeValue(state.phase)} phase` }
 	}
 	// A cadence is a positive whole number of milliseconds or absent. A wrong
 	// type is a corrupt record: silently dropping it would silently turn a paced
@@ -185,7 +207,17 @@ export class LoopStore {
 		return join(this.root, `${FILE_PREFIX}${loopId}${FILE_SUFFIX}`)
 	}
 
-	/** Load every checkpoint file; returns loops keyed by session id. */
+	/**
+	 * Load every checkpoint file; returns loops keyed by session id.
+	 *
+	 * Restore is the one path where a single bad entry can take down every
+	 * healthy one, so each file is isolated three ways: only regular files are
+	 * opened (a FIFO or device named `loop-*.json` would otherwise block or
+	 * stream forever, freezing startup before the loop tools are registered),
+	 * read failures are reported and skipped, and — belt and braces — an
+	 * unexpected throw from the parser is skipped rather than propagated, so no
+	 * single record can cost the rest of the session's loops.
+	 */
 	async load(): Promise<Map<string, LoopState>> {
 		const result = new Map<string, LoopState>()
 		let entries: string[]
@@ -200,13 +232,26 @@ export class LoopStore {
 			const filePath = join(this.root, entry)
 			let text: string
 			try {
+				// `lstat` without following links: a symlink or a directory is not a
+				// checkpoint this store wrote, and a write to it would land elsewhere.
+				const info = await lstat(filePath)
+				if (!info.isFile()) {
+					this.options.onError?.(`dsh-do: skipping checkpoint ${entry}: not a regular file`)
+					continue
+				}
 				text = await readFile(filePath, 'utf8')
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
 				this.options.onError?.(`dsh-do: could not read checkpoint ${entry}: ${String(error)}`)
 				continue
 			}
-			const parsed = parseCheckpoint(text, entry)
+			let parsed: ReturnType<typeof parseCheckpoint>
+			try {
+				parsed = parseCheckpoint(text, entry)
+			} catch (error) {
+				this.options.onError?.(`dsh-do: skipping checkpoint ${entry}: ${String(error)}`)
+				continue
+			}
 			if (!parsed.ok) {
 				this.options.onError?.(`dsh-do: skipping checkpoint ${entry}: ${parsed.error}`)
 				continue
